@@ -2,49 +2,6 @@
 
 A powerful, universal database migration tool supporting migrations between PostgreSQL, MySQL/MariaDB, and SQLite databases.
 
-## Quick Start
-
-Run directly without installation:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/PasarGuard/db-migratons/main/migrate.sh | bash
-```
-
-Or download and use:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/PasarGuard/db-migratons/main/migrate.sh -o migrate.sh
-chmod +x migrate.sh
-./migrate.sh
-```
-
-The script will automatically install `uv` if not found.
-
-## Features
-
-✅ **Multi-Database Support**
-- PostgreSQL (async via asyncpg)
-- MySQL/MariaDB (via pymysql)
-- SQLite
-
-✅ **Flexible Source Options**
-- SQL dump files (.sql)
-- SQLite database files (.db, .sqlite)
-- Live database connections (via URL)
-
-✅ **Migration Capabilities**
-- Direct database-to-database migration
-- SQL dump file migration
-- Automatic schema conversion
-- Intelligent data type mapping
-- Preserves relationships and foreign keys
-
-✅ **User-Friendly Interface**
-- Interactive menu-driven mode
-- Command-line mode for automation
-- Color-coded output
-- Progress tracking
-
 ## Prerequisites
 
 - **Python 3.8+**
