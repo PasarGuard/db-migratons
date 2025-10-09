@@ -29,7 +29,12 @@ cd db-migratons
 chmod +x migrate.sh
 ```
 
-That's it! The tool uses `uv` to automatically manage dependencies.
+3. Install dependencies:
+```bash
+uv sync
+```
+
+That's it! Dependencies are managed via `pyproject.toml` and installed in a local virtual environment.
 
 ## Usage
 

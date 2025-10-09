@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-#
+#!/bin/bash
+
 # PasarGuard Migration Tool
 # Interactive database migration with menu-driven interface
 #
@@ -34,7 +34,7 @@ clear_screen() {
     clear
     echo -e "${BOLD}${MAGENTA}"
     echo "╔════════════════════════════════════════════════════════════╗"
-    echo "║        PasarGuard Universal Database Migration            ║"
+    echo "║        PasarGuard Universal Database Migration             ║"
     echo "╚════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -50,7 +50,7 @@ check_uv() {
         clear_screen
         echo_info "uv not found. Installing uv..."
         echo ""
-        
+
         # Try to install uv
         if curl -LsSf https://astral.sh/uv/install.sh | sh; then
             echo ""
@@ -58,7 +58,7 @@ check_uv() {
             echo ""
             # Add uv to current PATH
             export PATH="$HOME/.cargo/bin:$PATH"
-            
+
             # Verify installation
             if ! command -v uv &>/dev/null; then
                 echo_error "uv installation succeeded but not found in PATH"
@@ -78,6 +78,20 @@ check_uv() {
         fi
     fi
     UV_VERSION=$(uv --version 2>&1 | awk '{print $2}')
+
+    # Sync dependencies from pyproject.toml
+    if [ ! -d ".venv" ]; then
+        echo_info "Setting up virtual environment and installing dependencies..."
+        echo ""
+        if uv sync; then
+            echo ""
+            echo_success "Dependencies installed successfully!"
+        else
+            echo ""
+            echo_error "Failed to install dependencies"
+            exit 1
+        fi
+    fi
 }
 
 detect_source_type() {
@@ -347,7 +361,7 @@ run_migration() {
     echo ""
     
     # Run migration with uv
-    if uv run --with sqlalchemy --with asyncpg --with pymysql "$SCRIPT" "$SOURCE_FILE" --to "$TARGET_TYPE" --db "$TARGET_DB"; then
+    if uv run "$SCRIPT" "$SOURCE_FILE" --to "$TARGET_TYPE" --db "$TARGET_DB"; then
         echo ""
         echo "═══════════════════════════════════════════════════════════"
         echo ""

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Wrapper: MySQL → PostgreSQL
 Usage:
@@ -15,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from migrations.universal import UniversalMigrator
 
+
 def parse_args():
     args = sys.argv[1:]
     if len(args) < 1:
@@ -24,12 +24,13 @@ def parse_args():
     target_db = None
     i = 1
     while i < len(args):
-        if args[i] in ('--db', '-d') and i+1 < len(args):
-            target_db = args[i+1]
+        if args[i] in ("--db", "-d") and i + 1 < len(args):
+            target_db = args[i + 1]
             i += 2
         else:
             i += 1
     return source, target_db
+
 
 def get_user_input(prompt, default=None):
     if default:
@@ -39,22 +40,24 @@ def get_user_input(prompt, default=None):
     v = input(prompt).strip()
     return v if v else default
 
+
 async def main():
     source, target_db = parse_args()
-    
+
     # Check if source exists (file) or is a URL
-    if not os.path.exists(source) and not source.startswith('mysql://'):
+    if not os.path.exists(source) and not source.startswith("mysql://"):
         print(f"File not found: {source}")
         sys.exit(1)
 
     if not target_db:
         target_db = get_user_input(
             "PostgreSQL URL (postgresql+asyncpg://user:pass@host:port/db)",
-            "postgresql+asyncpg://admin:pass@localhost:5432/pasarguard"
+            "postgresql+asyncpg://admin:pass@localhost:5432/pasarguard",
         )
 
     migrator = UniversalMigrator(source, "postgres", target_db, "mysql")
     await migrator.run()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
