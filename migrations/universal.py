@@ -34,7 +34,7 @@ class UniversalMigrator:
     """
 
     def __init__(
-        self, source: str, target_type: str, target_url: str, source_type: str = None
+        self, source: str, target_type: str, target_url: str, source_type: str = None, exclude_tables: list = None
     ):
         self.source = source
         self.source_type = (
@@ -49,6 +49,7 @@ class UniversalMigrator:
         self.create_statements = {}
         self.is_source_live = False
         self.is_target_async = target_type == "postgres"
+        self.exclude_tables = set(exclude_tables or [])
 
     def detect_source_type(self) -> bool:
         """Detect if source is SQL file or database"""
@@ -127,6 +128,11 @@ class UniversalMigrator:
 
         with self.source_engine.connect() as conn:
             for table in table_names:
+                # Skip excluded tables
+                if table in self.exclude_tables:
+                    print(f"  ⊘ {table} (excluded)")
+                    continue
+
                 # Get all rows
                 result = conn.execute(text(f"SELECT * FROM {table}"))
                 rows = result.fetchall()
@@ -141,6 +147,9 @@ class UniversalMigrator:
         print(f"✓ Read {len(self.tables)} tables with data")
         for name, data in self.tables.items():
             print(f"  • {name}: {len(data['rows'])} rows")
+
+        if self.exclude_tables:
+            print(f"✓ Excluded {len(self.exclude_tables)} tables: {', '.join(sorted(self.exclude_tables))}")
 
     def parse_sql(self):
         """Parse SQL dump file"""
@@ -158,6 +167,11 @@ class UniversalMigrator:
 
         for match in create_pattern.finditer(content):
             table = match.group(1)
+
+            # Skip excluded tables
+            if table in self.exclude_tables:
+                continue
+
             start_pos = match.end() - 1  # Position of opening (
 
             # Find matching closing parenthesis
@@ -172,6 +186,10 @@ class UniversalMigrator:
         )
 
         for table, cols, values in insert_pattern.findall(content):
+            # Skip excluded tables
+            if table in self.exclude_tables:
+                continue
+
             if table not in self.tables:
                 self.tables[table] = {"columns": None, "rows": []}
 
@@ -185,6 +203,9 @@ class UniversalMigrator:
         print(f"✓ Found {len(self.tables)} tables with data")
         for name, data in self.tables.items():
             print(f"  • {name}: {len(data['rows'])} rows")
+
+        if self.exclude_tables:
+            print(f"✓ Excluded {len(self.exclude_tables)} tables: {', '.join(sorted(self.exclude_tables))}")
 
     def _parse_columns(self, cols: str) -> list:
         """Extract column names"""
@@ -576,6 +597,10 @@ class UniversalMigrator:
                 print(f"  ⊘ {table} (skipped)")
                 continue
 
+            if table in self.exclude_tables:
+                print(f"  ⊘ {table} (excluded)")
+                continue
+
             data = self.tables[table]
             rows = data["rows"]
             if not rows:
@@ -606,6 +631,12 @@ class UniversalMigrator:
                             col_info = cols_dict.get(
                                 c, {"type": "text", "nullable": True, "default": None}
                             )
+
+                            # Preserve None/NULL values for nullable columns
+                            if v is None and col_info["nullable"]:
+                                converted.append(None)
+                                continue
+
                             converted_val = self._convert_type(v, col_info["type"])
 
                             # Handle None values for NOT NULL columns
@@ -642,6 +673,12 @@ class UniversalMigrator:
                         col_info = cols_dict.get(
                             c, {"type": "text", "nullable": True, "default": None}
                         )
+
+                        # Preserve None/NULL values for nullable columns
+                        if v is None and col_info["nullable"]:
+                            converted.append(None)
+                            continue
+
                         converted_val = self._convert_type(v, col_info["type"])
 
                         # Handle None values for NOT NULL columns
@@ -887,12 +924,14 @@ def parse_args():
         print(
             "  --source-type <type>    Source database type (auto-detected if not specified)"
         )
+        print("  --exclude-tables <list> Comma-separated list of tables to exclude")
         sys.exit(0 if "--help" in args or "-h" in args else 1)
 
     source = args[0]
     target_type = None
     target_db = None
     source_type = None
+    exclude_tables = None
 
     i = 1
     while i < len(args):
@@ -905,10 +944,13 @@ def parse_args():
         elif args[i] == "--source-type" and i + 1 < len(args):
             source_type = args[i + 1].lower()
             i += 2
+        elif args[i] in ("--exclude-tables", "-e") and i + 1 < len(args):
+            exclude_tables = [t.strip() for t in args[i + 1].split(",")]
+            i += 2
         else:
             i += 1
 
-    return source, target_type, target_db, source_type
+    return source, target_type, target_db, source_type, exclude_tables
 
 
 def get_user_input(prompt: str, default: str = None) -> str:
@@ -921,7 +963,7 @@ def get_user_input(prompt: str, default: str = None) -> str:
 
 
 async def main():
-    source, target_type, target_db, source_type = parse_args()
+    source, target_type, target_db, source_type, exclude_tables = parse_args()
 
     if not os.path.exists(source) and not source.startswith(
         ("postgresql://", "mysql://", "sqlite://")
@@ -991,12 +1033,16 @@ async def main():
         print(f"Database: {target_db.replace('sqlite:///', '')}")
     print("=" * 60)
 
+    if exclude_tables:
+        print(f"Excluded tables: {', '.join(exclude_tables)}")
+        print("=" * 60)
+
     resp = get_user_input("\nProceed with migration? (yes/no)", "no")
     if resp.lower() not in ("yes", "y"):
         print("Cancelled")
         sys.exit(0)
 
-    migrator = UniversalMigrator(source, target_type, target_db, source_type)
+    migrator = UniversalMigrator(source, target_type, target_db, source_type, exclude_tables)
     success = await migrator.run()
     sys.exit(0 if success else 1)
 

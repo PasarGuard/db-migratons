@@ -57,7 +57,7 @@ This will launch an interactive menu where you can:
 For automation or scripting:
 
 ```bash
-./migrate.sh <source> --to <type> --db <target_url>
+./migrate.sh <source> --to <type> --db <target_url> [--exclude-tables <tables>]
 ```
 
 #### Examples
@@ -80,6 +80,11 @@ For automation or scripting:
 **Migrate MySQL dump to PostgreSQL:**
 ```bash
 ./migrate.sh mysql_dump.sql --to postgres --db postgresql+asyncpg://admin:password@localhost:5432/pasarguard
+```
+
+**Exclude specific tables (for faster migration):**
+```bash
+./migrate.sh dump.sql --to postgres --db postgresql+asyncpg://user:pass@localhost:5432/mydb --exclude-tables admin_usage_logs,user_usage_logs,node_stats
 ```
 
 ## Database URL Formats
@@ -116,6 +121,21 @@ sqlite:///path/to/database.db
 4. **Target Preparation**: Clears target database (with confirmation)
 5. **Data Import**: Imports data with type conversion and validation
 6. **Progress Reporting**: Shows detailed progress and error reporting
+
+### Excluding Tables
+
+You can exclude specific tables from migration to speed up the process or skip unnecessary data like logs:
+
+```bash
+--exclude-tables "table1,table2,table3"
+```
+
+**Common tables to exclude:**
+- `admin_usage_logs` - Admin activity logs
+- `user_usage_logs` - User activity logs
+- `node_stats` - Historical node statistics
+- `node_usages` - Node usage history
+- `user_subscription_updates` - Subscription update history
 
 ## Data Type Mapping
 

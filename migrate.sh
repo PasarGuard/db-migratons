@@ -23,6 +23,7 @@ SOURCE_FILE=""
 SOURCE_TYPE=""
 TARGET_TYPE=""
 TARGET_DB=""
+EXCLUDE_TABLES=""
 
 echo_success() { echo -e "${GREEN}✓${NC} $1"; }
 echo_error()   { echo -e "${RED}✗${NC} $1"; }
@@ -50,7 +51,7 @@ check_uv() {
         clear_screen
         echo_info "uv not found. Installing uv..."
         echo ""
-
+        
         # Try to install uv
         if curl -LsSf https://astral.sh/uv/install.sh | sh; then
             echo ""
@@ -58,7 +59,7 @@ check_uv() {
             echo ""
             # Add uv to current PATH
             export PATH="$HOME/.cargo/bin:$PATH"
-
+            
             # Verify installation
             if ! command -v uv &>/dev/null; then
                 echo_error "uv installation succeeded but not found in PATH"
@@ -78,7 +79,7 @@ check_uv() {
         fi
     fi
     UV_VERSION=$(uv --version 2>&1 | awk '{print $2}')
-
+    
     # Sync dependencies from pyproject.toml
     if [ ! -d ".venv" ]; then
         echo_info "Setting up virtual environment and installing dependencies..."
@@ -99,7 +100,7 @@ detect_source_type() {
     
     if [[ "$source" == *.db ]] || [[ "$source" == *.sqlite ]]; then
         echo "sqlite"
-    elif [[ "$source" == *.sql ]]; then
+        elif [[ "$source" == *.sql ]]; then
         # Try to detect from content
         if [ -f "$source" ]; then
             if grep -q "AUTOINCREMENT" "$source" 2>/dev/null; then
@@ -110,11 +111,11 @@ detect_source_type() {
         else
             echo "mysql"
         fi
-    elif [[ "$source" == mysql://* ]] || [[ "$source" == mysql+* ]]; then
+        elif [[ "$source" == mysql://* ]] || [[ "$source" == mysql+* ]]; then
         echo "mysql"
-    elif [[ "$source" == postgresql://* ]] || [[ "$source" == postgresql+* ]]; then
+        elif [[ "$source" == postgresql://* ]] || [[ "$source" == postgresql+* ]]; then
         echo "postgres"
-    elif [[ "$source" == sqlite://* ]]; then
+        elif [[ "$source" == sqlite://* ]]; then
         echo "sqlite"
     else
         echo "unknown"
@@ -150,7 +151,7 @@ select_source() {
                     echo_error "File not found: $SOURCE_FILE"
                     press_enter
                 fi
-                ;;
+            ;;
             2)
                 echo ""
                 echo -n "Enter MySQL SQL dump file path: "
@@ -164,7 +165,7 @@ select_source() {
                     echo_error "File not found: $SOURCE_FILE"
                     press_enter
                 fi
-                ;;
+            ;;
             3)
                 echo ""
                 echo -n "Enter PostgreSQL SQL dump file path: "
@@ -178,7 +179,7 @@ select_source() {
                     echo_error "File not found: $SOURCE_FILE"
                     press_enter
                 fi
-                ;;
+            ;;
             4)
                 echo ""
                 echo "Format: mysql+pymysql://user:password@host:port/database"
@@ -188,7 +189,7 @@ select_source() {
                 echo_success "Source selected"
                 press_enter
                 return 0
-                ;;
+            ;;
             5)
                 echo ""
                 echo "Format: postgresql://user:password@host:port/database"
@@ -198,16 +199,16 @@ select_source() {
                 echo_success "Source selected"
                 press_enter
                 return 0
-                ;;
+            ;;
             0)
                 clear_screen
                 echo_info "Migration cancelled"
                 exit 0
-                ;;
+            ;;
             *)
                 echo_error "Invalid choice"
                 press_enter
-                ;;
+            ;;
         esac
     done
 }
@@ -243,7 +244,7 @@ select_target() {
                     echo_error "URL cannot be empty"
                     press_enter
                 fi
-                ;;
+            ;;
             2)
                 TARGET_TYPE="mysql"
                 echo ""
@@ -259,7 +260,7 @@ select_target() {
                     echo_error "URL cannot be empty"
                     press_enter
                 fi
-                ;;
+            ;;
             3)
                 TARGET_TYPE="sqlite"
                 echo ""
@@ -277,16 +278,40 @@ select_target() {
                     echo_error "Filename cannot be empty"
                     press_enter
                 fi
-                ;;
+            ;;
             0)
                 return 1
-                ;;
+            ;;
             *)
                 echo_error "Invalid choice"
                 press_enter
-                ;;
+            ;;
         esac
     done
+}
+
+select_exclude_tables() {
+    clear_screen
+    echo_title "Step 3: Exclude Tables (Optional)"
+    echo ""
+    echo -e "${CYAN}Source: ${NC}$SOURCE_FILE (${SOURCE_TYPE})"
+    echo -e "${CYAN}Target: ${NC}$TARGET_TYPE"
+    echo ""
+    echo "Enter table names to exclude (comma-separated), or press Enter to skip:"
+    echo "Example: admin_usage_logs,user_usage_logs,node_stats"
+    echo ""
+    echo -n "Tables to exclude: "
+    read -r EXCLUDE_TABLES
+    
+    if [ -n "$EXCLUDE_TABLES" ]; then
+        echo ""
+        echo_success "Will exclude: $EXCLUDE_TABLES"
+    else
+        echo ""
+        echo_success "Will migrate all tables"
+    fi
+    press_enter
+    return 0
 }
 
 confirm_migration() {
@@ -307,6 +332,13 @@ confirm_migration() {
     fi
     echo "  URL:      $MASKED_TARGET"
     echo ""
+    
+    if [ -n "$EXCLUDE_TABLES" ]; then
+        echo -e "${BOLD}Excluded Tables:${NC}"
+        echo "  $EXCLUDE_TABLES"
+        echo ""
+    fi
+    
     echo -e "${YELLOW}⚠  This will DELETE all data in the target database!${NC}"
     echo ""
     echo -n "Proceed with migration? [yes/no]: "
@@ -327,23 +359,23 @@ get_migration_script() {
     case "${src}_to_${tgt}" in
         sqlite_to_postgres)
             echo "migrations/sqlite_to_postgres.py"
-            ;;
+        ;;
         sqlite_to_mysql)
             echo "migrations/sqlite_to_mysql.py"
-            ;;
+        ;;
         mysql_to_postgres)
             echo "migrations/mysql_to_postgres.py"
-            ;;
+        ;;
         mysql_to_sqlite)
             echo "migrations/mysql_to_sqlite.py"
-            ;;
+        ;;
         postgres_to_mysql|postgres_to_sqlite)
             # These don't have specific wrappers yet, use universal
             echo "migrations/universal.py"
-            ;;
+        ;;
         *)
             echo "migrations/universal.py"
-            ;;
+        ;;
     esac
 }
 
@@ -356,12 +388,21 @@ run_migration() {
     
     echo_info "Using uv $UV_VERSION"
     echo_info "Migration script: $SCRIPT"
+    if [ -n "$EXCLUDE_TABLES" ]; then
+        echo_info "Excluding tables: $EXCLUDE_TABLES"
+    fi
     echo ""
     echo "═══════════════════════════════════════════════════════════"
     echo ""
     
+    # Build command with optional exclude tables
+    CMD="uv run \"$SCRIPT\" \"$SOURCE_FILE\" --to \"$TARGET_TYPE\" --db \"$TARGET_DB\""
+    if [ -n "$EXCLUDE_TABLES" ]; then
+        CMD="$CMD --exclude-tables \"$EXCLUDE_TABLES\""
+    fi
+    
     # Run migration with uv
-    if uv run "$SCRIPT" "$SOURCE_FILE" --to "$TARGET_TYPE" --db "$TARGET_DB"; then
+    if eval $CMD; then
         echo ""
         echo "═══════════════════════════════════════════════════════════"
         echo ""
@@ -394,13 +435,15 @@ main_menu() {
                 # Interactive migration workflow
                 if select_source; then
                     if select_target; then
-                        if confirm_migration; then
-                            run_migration
-                            press_enter
+                        if select_exclude_tables; then
+                            if confirm_migration; then
+                                run_migration
+                                press_enter
+                            fi
                         fi
                     fi
                 fi
-                ;;
+            ;;
             2)
                 # Quick command line mode
                 clear_screen
@@ -415,19 +458,19 @@ main_menu() {
                 echo ""
                 echo "Available target types: postgres, mysql, sqlite"
                 press_enter
-                ;;
+            ;;
             3)
                 show_help
-                ;;
+            ;;
             0)
                 clear_screen
                 echo_info "Thank you for using PasarGuard Migration Tool"
                 exit 0
-                ;;
+            ;;
             *)
                 echo_error "Invalid choice"
                 press_enter
-                ;;
+            ;;
         esac
     done
 }
@@ -472,7 +515,7 @@ if [ $# -eq 0 ]; then
     # No arguments - run interactive menu
     check_uv
     main_menu
-elif [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
+    elif [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
     show_help
     exit 0
 else
@@ -488,14 +531,18 @@ else
             --to|-t)
                 TARGET_TYPE="$2"
                 shift 2
-                ;;
+            ;;
             --db|-d)
                 TARGET_DB="$2"
                 shift 2
-                ;;
+            ;;
+            --exclude-tables|-e)
+                EXCLUDE_TABLES="$2"
+                shift 2
+            ;;
             *)
                 shift
-                ;;
+            ;;
         esac
     done
     

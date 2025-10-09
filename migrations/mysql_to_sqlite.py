@@ -22,14 +22,18 @@ def parse_args():
         sys.exit(1)
     source = args[0]
     target_db = None
+    exclude_tables = None
     i = 1
     while i < len(args):
         if args[i] in ("--db", "-d") and i + 1 < len(args):
             target_db = args[i + 1]
             i += 2
+        elif args[i] in ("--exclude-tables", "-e") and i + 1 < len(args):
+            exclude_tables = [t.strip() for t in args[i + 1].split(",")]
+            i += 2
         else:
             i += 1
-    return source, target_db
+    return source, target_db, exclude_tables
 
 
 def get_user_input(prompt, default=None):
@@ -42,7 +46,7 @@ def get_user_input(prompt, default=None):
 
 
 async def main():
-    source, target_db = parse_args()
+    source, target_db, exclude_tables = parse_args()
 
     # Check if source exists (file) or is a URL
     if not os.path.exists(source) and not source.startswith("mysql://"):
@@ -55,7 +59,7 @@ async def main():
     if not target_db.startswith("sqlite:///"):
         target_db = f"sqlite:///{target_db}"
 
-    migrator = UniversalMigrator(source, "sqlite", target_db, "mysql")
+    migrator = UniversalMigrator(source, "sqlite", target_db, "mysql", exclude_tables)
     await migrator.run()
 
 
