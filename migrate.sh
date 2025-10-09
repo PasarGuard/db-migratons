@@ -48,13 +48,34 @@ press_enter() {
 check_uv() {
     if ! command -v uv &>/dev/null; then
         clear_screen
-        echo_error "uv not found!"
+        echo_info "uv not found. Installing uv..."
         echo ""
-        echo "Please install uv to continue:"
-        echo -e "  ${CYAN}curl -LsSf https://astral.sh/uv/install.sh | sh${NC}"
-        echo ""
-        echo -e "Or visit: ${CYAN}https://github.com/astral-sh/uv${NC}"
-        exit 1
+        
+        # Try to install uv
+        if curl -LsSf https://astral.sh/uv/install.sh | sh; then
+            echo ""
+            echo_success "uv installed successfully!"
+            echo ""
+            # Add uv to current PATH
+            export PATH="$HOME/.cargo/bin:$PATH"
+            
+            # Verify installation
+            if ! command -v uv &>/dev/null; then
+                echo_error "uv installation succeeded but not found in PATH"
+                echo "Please add to PATH: export PATH=\"\$HOME/.cargo/bin:\$PATH\""
+                echo "Then run this script again."
+                exit 1
+            fi
+        else
+            echo ""
+            echo_error "Failed to install uv automatically"
+            echo ""
+            echo "Please install manually:"
+            echo -e "  ${CYAN}curl -LsSf https://astral.sh/uv/install.sh | sh${NC}"
+            echo ""
+            echo -e "Or visit: ${CYAN}https://github.com/astral-sh/uv${NC}"
+            exit 1
+        fi
     fi
     UV_VERSION=$(uv --version 2>&1 | awk '{print $2}')
 }

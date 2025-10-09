@@ -2,6 +2,24 @@
 
 A powerful, universal database migration tool supporting migrations between PostgreSQL, MySQL/MariaDB, and SQLite databases.
 
+## Quick Start
+
+Run directly without installation:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/PasarGuard/db-migratons/main/migrate.sh | bash
+```
+
+Or download and use:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/PasarGuard/db-migratons/main/migrate.sh -o migrate.sh
+chmod +x migrate.sh
+./migrate.sh
+```
+
+The script will automatically install `uv` if not found.
+
 ## Features
 
 ✅ **Multi-Database Support**
@@ -213,14 +231,11 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
 
-## License
-
-This project is open source and available under the MIT License.
-
 ## Support
 
 For issues, questions, or contributions, please visit:
 https://github.com/PasarGuard/db-migratons
+https://t.me/PasarGuardGP
 
 ## Acknowledgments
 
