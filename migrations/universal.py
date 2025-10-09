@@ -180,6 +180,10 @@ class UniversalMigrator:
                 definition = content[start_pos + 1 : end_pos]
                 self.create_statements[table] = definition
 
+                # Extract column order from CREATE TABLE for proper mapping
+                if table not in self.tables:
+                    self.tables[table] = {"columns": self._extract_columns_from_create(definition), "rows": []}
+
         insert_pattern = re.compile(
             r"INSERT INTO\s+[`'\"]?(\w+)[`'\"]?\s+(\([^)]+\))?\s*VALUES\s+(.+?);",
             re.IGNORECASE | re.DOTALL,
@@ -193,10 +197,13 @@ class UniversalMigrator:
             if table not in self.tables:
                 self.tables[table] = {"columns": None, "rows": []}
 
+            # If INSERT has column names, use those; otherwise keep the CREATE TABLE order
             if cols and not self.tables[table]["columns"]:
-                self.tables[table]["columns"] = self._parse_columns(cols)
+                parsed_cols = self._parse_columns(cols)
+                self.tables[table]["columns"] = parsed_cols
 
-            self.tables[table]["rows"].extend(self._parse_values(values))
+            parsed_rows = self._parse_values(values)
+            self.tables[table]["rows"].extend(parsed_rows)
 
         print(f"✓ Parsed {'SQLite' if is_sqlite else 'MySQL'} dump")
         print(f"✓ Found {len(self.create_statements)} table schemas")
@@ -208,9 +215,22 @@ class UniversalMigrator:
             print(f"✓ Excluded {len(self.exclude_tables)} tables: {', '.join(sorted(self.exclude_tables))}")
 
     def _parse_columns(self, cols: str) -> list:
-        """Extract column names"""
+        """Extract column names from INSERT statement"""
         cols = cols.strip()[1:-1]  # Remove ( )
         return [c.strip().strip('`"\'"') for c in cols.split(",") if c.strip()]
+
+    def _extract_columns_from_create(self, definition: str) -> list:
+        """Extract column names in order from CREATE TABLE definition"""
+        columns = []
+        # Match column definitions (column_name data_type ...)
+        # This regex matches lines like: `id` int NOT NULL AUTO_INCREMENT,
+        pattern = re.compile(r'^\s*[`\'\"]?(\w+)[`\'\"]?\s+\w+', re.MULTILINE)
+        for match in pattern.finditer(definition):
+            col_name = match.group(1)
+            # Skip constraint keywords
+            if col_name.upper() not in ('PRIMARY', 'KEY', 'UNIQUE', 'CONSTRAINT', 'FOREIGN', 'INDEX', 'FULLTEXT', 'CHECK'):
+                columns.append(col_name)
+        return columns
 
     def _parse_values(self, values_str: str) -> list:
         """Parse VALUES clause"""
