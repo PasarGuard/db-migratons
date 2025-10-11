@@ -184,8 +184,10 @@ class UniversalMigrator:
                 if table not in self.tables:
                     self.tables[table] = {"columns": self._extract_columns_from_create(definition), "rows": []}
 
+        # Match INSERT statements - handle semicolons in data by looking ahead for statement terminators
+        # This matches until we find a semicolon followed by keywords or end of input
         insert_pattern = re.compile(
-            r"INSERT INTO\s+[`'\"]?(\w+)[`'\"]?\s+(\([^)]+\))?\s*VALUES\s+(.+?);",
+            r"INSERT\s+INTO\s+[`'\"]?(\w+)[`'\"]?\s+(\([^)]+\))?\s*VALUES\s+(.+?);\s*(?=(?:INSERT|LOCK|UNLOCK|ALTER|CREATE|DROP|/\*!|\s*$))",
             re.IGNORECASE | re.DOTALL,
         )
 
@@ -539,11 +541,12 @@ class UniversalMigrator:
         ]
 
         if self.is_target_async:
-            async with self.session_maker() as session:
-                await session.execute(text("SET session_replication_role = 'replica';"))
-                await session.commit()
-
+            # PostgreSQL: Use try/finally to ensure session_replication_role is always restored
             try:
+                async with self.session_maker() as session:
+                    await session.execute(text("SET session_replication_role = 'replica';"))
+                    await session.commit()
+
                 # Truncate each table in its own transaction to avoid cascading failures
                 for table in tables:
                     async with self.session_maker() as session:
@@ -555,7 +558,7 @@ class UniversalMigrator:
                             await session.rollback()
                             print(f"  ⚠ {table}: {str(e)[:50]}")
             finally:
-                # Ensure session_replication_role is always restored
+                # CRITICAL: Always restore session_replication_role, even on errors
                 async with self.session_maker() as session:
                     await session.execute(text("SET session_replication_role = 'origin';"))
                     await session.commit()
@@ -643,14 +646,89 @@ class UniversalMigrator:
             fail = 0
 
             if self.is_target_async:
-                batch_size = 1000  # Commit every 1000 rows for better performance
+                batch_size = 5000  # Commit every 5000 rows for better performance
 
-                async with self.session_maker() as session:
-                    await session.execute(
-                        text("SET session_replication_role = 'replica';")
-                    )
+                # PostgreSQL: Use try/finally to ensure session_replication_role is always restored
+                try:
+                    async with self.session_maker() as session:
+                        await session.execute(
+                            text("SET session_replication_role = 'replica';")
+                        )
+                        await session.commit()
 
-                    for i, row_vals in enumerate(rows):
+                        # Use bulk_insert_mappings for better performance
+                        batch_data = []
+
+                        for row_vals in rows:
+                            row_vals = self._adjust_row(row_vals, cols)
+                            converted = []
+                            for c, v in zip(cols, row_vals):
+                                col_info = cols_dict.get(
+                                    c, {"type": "text", "nullable": True, "default": None}
+                                )
+
+                                # Preserve None/NULL values for nullable columns
+                                if v is None and col_info["nullable"]:
+                                    converted.append(None)
+                                    continue
+
+                                converted_val = self._convert_type(v, col_info["type"])
+
+                                # Handle None values for NOT NULL columns
+                                if converted_val is None and not col_info["nullable"]:
+                                    converted_val = self._get_default_value(
+                                        col_info, table, c
+                                    )
+
+                                converted.append(converted_val)
+
+                            params = dict(zip(cols, converted))
+                            batch_data.append(params)
+
+                            # Execute batch insert when batch size reached
+                            if len(batch_data) >= batch_size:
+                                try:
+                                    # Use bulk insert for better performance
+                                    sql = self._build_insert(table, cols)
+                                    for data in batch_data:
+                                        await session.execute(text(sql), data)
+                                    await session.commit()
+                                    ok += len(batch_data)
+                                    batch_data = []
+                                except Exception as e:
+                                    await session.rollback()
+                                    fail += len(batch_data)
+                                    batch_data = []
+                                    if fail <= 1:  # Print first error for debugging
+                                        print(f"\n    ✗ Error: {str(e)[:100]}")
+
+                        # Insert remaining rows
+                        if batch_data:
+                            try:
+                                sql = self._build_insert(table, cols)
+                                for data in batch_data:
+                                    await session.execute(text(sql), data)
+                                await session.commit()
+                                ok += len(batch_data)
+                            except Exception as e:
+                                await session.rollback()
+                                fail += len(batch_data)
+                                if fail <= 1:
+                                    print(f"\n    ✗ Error: {str(e)[:100]}")
+                finally:
+                    # CRITICAL: Always restore session_replication_role, even on errors
+                    async with self.session_maker() as session:
+                        await session.execute(
+                            text("SET session_replication_role = 'origin';")
+                        )
+                        await session.commit()
+            else:
+                # MySQL: Implement proper batch commits
+                batch_size = 5000
+                batch_data = []
+
+                with self.target_engine.begin() as conn:
+                    for row_vals in rows:
                         row_vals = self._adjust_row(row_vals, cols)
                         converted = []
                         for c, v in zip(cols, row_vals):
@@ -667,73 +745,42 @@ class UniversalMigrator:
 
                             # Handle None values for NOT NULL columns
                             if converted_val is None and not col_info["nullable"]:
-                                converted_val = self._get_default_value(
-                                    col_info, table, c
-                                )
+                                converted_val = self._get_default_value(col_info, table, c)
 
                             converted.append(converted_val)
 
-                        sql = self._build_insert(table, cols)
                         params = dict(zip(cols, converted))
+                        batch_data.append(params)
 
+                        # Execute batch insert when batch size reached
+                        if len(batch_data) >= batch_size:
+                            try:
+                                sql = self._build_insert(table, cols)
+                                for data in batch_data:
+                                    conn.execute(text(sql), data)
+                                conn.commit()
+                                ok += len(batch_data)
+                                batch_data = []
+                            except Exception as e:
+                                conn.rollback()
+                                fail += len(batch_data)
+                                batch_data = []
+                                if fail <= 1:  # Print first error for debugging
+                                    print(f"\n    ✗ Error: {str(e)[:100]}")
+
+                    # Insert remaining rows
+                    if batch_data:
                         try:
-                            await session.execute(text(sql), params)
-                            ok += 1
-
-                            # Commit in batches to improve performance
-                            if (i + 1) % batch_size == 0:
-                                await session.commit()
-
+                            sql = self._build_insert(table, cols)
+                            for data in batch_data:
+                                conn.execute(text(sql), data)
+                            conn.commit()
+                            ok += len(batch_data)
                         except Exception as e:
-                            await session.rollback()
-                            fail += 1
-                            if fail == 1:  # Print first error for debugging
+                            conn.rollback()
+                            fail += len(batch_data)
+                            if fail <= 1:
                                 print(f"\n    ✗ Error: {str(e)[:100]}")
-                                print(f"    Data: {params}")
-
-                    # Final commit for remaining rows
-                    await session.commit()
-
-                    await session.execute(
-                        text("SET session_replication_role = 'origin';")
-                    )
-                    await session.commit()
-            else:
-                batch_size = 1000  # Commit every 1000 rows for better performance
-
-                for i, row_vals in enumerate(rows):
-                    row_vals = self._adjust_row(row_vals, cols)
-                    converted = []
-                    for c, v in zip(cols, row_vals):
-                        col_info = cols_dict.get(
-                            c, {"type": "text", "nullable": True, "default": None}
-                        )
-
-                        # Preserve None/NULL values for nullable columns
-                        if v is None and col_info["nullable"]:
-                            converted.append(None)
-                            continue
-
-                        converted_val = self._convert_type(v, col_info["type"])
-
-                        # Handle None values for NOT NULL columns
-                        if converted_val is None and not col_info["nullable"]:
-                            converted_val = self._get_default_value(col_info, table, c)
-
-                        converted.append(converted_val)
-
-                    sql = self._build_insert(table, cols)
-                    params = dict(zip(cols, converted))
-
-                    try:
-                        with self.target_engine.begin() as conn:
-                            conn.execute(text(sql), params)
-                        ok += 1
-                    except Exception as e:
-                        fail += 1
-                        if fail == 1:  # Print first error for debugging
-                            print(f"\n    ✗ Error: {str(e)[:100]}")
-                            print(f"    Data: {params}")
 
             if fail > 0:
                 print(f"⚠ {ok} ok, {fail} failed")
