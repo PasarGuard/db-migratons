@@ -543,40 +543,44 @@ class UniversalMigrator:
                 await session.execute(text("SET session_replication_role = 'replica';"))
                 await session.commit()
 
-            # Truncate each table in its own transaction to avoid cascading failures
-            for table in tables:
+            try:
+                # Truncate each table in its own transaction to avoid cascading failures
+                for table in tables:
+                    async with self.session_maker() as session:
+                        try:
+                            await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+                            await session.commit()
+                            print(f"  ✓ {table}")
+                        except Exception as e:
+                            await session.rollback()
+                            print(f"  ⚠ {table}: {str(e)[:50]}")
+            finally:
+                # Ensure session_replication_role is always restored
                 async with self.session_maker() as session:
-                    try:
-                        await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
-                        await session.commit()
-                        print(f"  ✓ {table}")
-                    except Exception as e:
-                        await session.rollback()
-                        print(f"  ⚠ {table}: {str(e)[:50]}")
-
-            async with self.session_maker() as session:
-                await session.execute(text("SET session_replication_role = 'origin';"))
-                await session.commit()
+                    await session.execute(text("SET session_replication_role = 'origin';"))
+                    await session.commit()
         else:
             if self.target_type == "mysql":
                 with self.target_engine.begin() as conn:
                     conn.execute(text("SET FOREIGN_KEY_CHECKS = 0;"))
 
-            # Clear each table in its own transaction to avoid cascading failures
-            for table in tables:
-                try:
+            try:
+                # Clear each table in its own transaction to avoid cascading failures
+                for table in tables:
+                    try:
+                        with self.target_engine.begin() as conn:
+                            if self.target_type == "mysql":
+                                conn.execute(text(f"TRUNCATE TABLE {table}"))
+                            else:
+                                conn.execute(text(f"DELETE FROM {table}"))
+                        print(f"  ✓ {table}")
+                    except Exception as e:
+                        print(f"  ⚠ {table}: {str(e)[:50]}")
+            finally:
+                # Ensure FOREIGN_KEY_CHECKS is always restored for MySQL
+                if self.target_type == "mysql":
                     with self.target_engine.begin() as conn:
-                        if self.target_type == "mysql":
-                            conn.execute(text(f"TRUNCATE TABLE {table}"))
-                        else:
-                            conn.execute(text(f"DELETE FROM {table}"))
-                    print(f"  ✓ {table}")
-                except Exception as e:
-                    print(f"  ⚠ {table}: {str(e)[:50]}")
-
-            if self.target_type == "mysql":
-                with self.target_engine.begin() as conn:
-                    conn.execute(text("SET FOREIGN_KEY_CHECKS = 1;"))
+                        conn.execute(text("SET FOREIGN_KEY_CHECKS = 1;"))
 
     async def import_data(self):
         """Import all data"""
@@ -639,12 +643,14 @@ class UniversalMigrator:
             fail = 0
 
             if self.is_target_async:
+                batch_size = 1000  # Commit every 1000 rows for better performance
+
                 async with self.session_maker() as session:
                     await session.execute(
                         text("SET session_replication_role = 'replica';")
                     )
 
-                    for row_vals in rows:
+                    for i, row_vals in enumerate(rows):
                         row_vals = self._adjust_row(row_vals, cols)
                         converted = []
                         for c, v in zip(cols, row_vals):
@@ -672,8 +678,12 @@ class UniversalMigrator:
 
                         try:
                             await session.execute(text(sql), params)
-                            await session.commit()
                             ok += 1
+
+                            # Commit in batches to improve performance
+                            if (i + 1) % batch_size == 0:
+                                await session.commit()
+
                         except Exception as e:
                             await session.rollback()
                             fail += 1
@@ -681,12 +691,17 @@ class UniversalMigrator:
                                 print(f"\n    ✗ Error: {str(e)[:100]}")
                                 print(f"    Data: {params}")
 
+                    # Final commit for remaining rows
+                    await session.commit()
+
                     await session.execute(
                         text("SET session_replication_role = 'origin';")
                     )
                     await session.commit()
             else:
-                for row_vals in rows:
+                batch_size = 1000  # Commit every 1000 rows for better performance
+
+                for i, row_vals in enumerate(rows):
                     row_vals = self._adjust_row(row_vals, cols)
                     converted = []
                     for c, v in zip(cols, row_vals):
@@ -748,6 +763,67 @@ class UniversalMigrator:
         """Build INSERT SQL for target database"""
         placeholders = ", ".join([f":{c}" for c in cols])
         return f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})"
+
+    async def get_max_id(self, table: str, id_column: str = "id") -> int:
+        """Get maximum ID from a table"""
+        if self.is_target_async:
+            async with self.session_maker() as session:
+                result = await session.execute(text(f"SELECT MAX({id_column}) FROM {table}"))
+                max_id = result.scalar()
+                return max_id if max_id is not None else 0
+        else:
+            with self.target_engine.connect() as conn:
+                result = conn.execute(text(f"SELECT MAX({id_column}) FROM {table}"))
+                max_id = result.scalar()
+                return max_id if max_id is not None else 0
+
+    async def restart_sequences(self):
+        """Restart PostgreSQL sequences and MySQL auto-increment after migration"""
+        print("\nRestarting sequences/auto-increment...")
+
+        # Tables with auto-incrementing primary keys
+        sequence_tables = [
+            "users",
+            "admins",
+            "nodes",
+            "inbounds",
+            "groups",
+            "hosts",
+            "user_templates",
+            "core_configs"
+        ]
+
+        for table in sequence_tables:
+            max_id = await self.get_max_id(table, "id")
+            if max_id is None or max_id <= 0:
+                continue
+
+            next_id = max_id + 1
+
+            if self.target_type == "postgres":
+                seq_name = f"{table}_id_seq"
+                print(f"  • {seq_name}: restarting with {next_id}")
+
+                if self.is_target_async:
+                    async with self.session_maker() as session:
+                        await session.execute(text(f"SELECT setval('{seq_name}', {next_id})"))
+                        await session.commit()
+                else:
+                    with self.target_engine.begin() as conn:
+                        conn.execute(text(f"SELECT setval('{seq_name}', {next_id})"))
+
+            elif self.target_type == "mysql":
+                print(f"  • {table}: setting AUTO_INCREMENT to {next_id}")
+
+                if self.is_target_async:
+                    async with self.session_maker() as session:
+                        await session.execute(text(f"ALTER TABLE {table} AUTO_INCREMENT = {next_id}"))
+                        await session.commit()
+                else:
+                    with self.target_engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {table} AUTO_INCREMENT = {next_id}"))
+
+        print("✓ Sequences/auto-increment restarted")
 
     def _convert_create_table_to_sqlite(self, table: str, definition: str) -> str:
         """Convert MySQL CREATE TABLE to SQLite"""
@@ -916,6 +992,7 @@ class UniversalMigrator:
             await self.create_schema()  # Create schema for SQLite
             await self.clear_data()
             await self.import_data()
+            await self.restart_sequences()  # Restart sequences for PostgreSQL
             print("\n✓ Migration completed!")
             return True
         except Exception as e:
