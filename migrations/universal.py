@@ -430,6 +430,10 @@ class UniversalMigrator:
         ):
             return 0.0
 
+        # For datetime fields
+        if any(t in col_type for t in ["timestamp", "datetime", "timestamptz"]):
+            return datetime.now()
+
         # For text/string fields
         if any(t in col_type for t in ["text", "varchar", "char", "character"]):
             # Special case for known enum fields
@@ -481,12 +485,20 @@ class UniversalMigrator:
                 return None
 
         # Timestamp/DateTime
-        if any(t in col_type for t in ["timestamp", "datetime"]):
+        if any(t in col_type for t in ["timestamp", "datetime", "timestamptz"]):
             if isinstance(val, str):
                 try:
-                    return datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
+                    # Handle SQLite datetime format with microseconds
+                    if '.' in val:
+                        return datetime.strptime(val, "%Y-%m-%d %H:%M:%S.%f")
+                    else:
+                        return datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
                 except ValueError:
-                    return None
+                    try:
+                        # Try ISO format
+                        return datetime.fromisoformat(val.replace('Z', '+00:00'))
+                    except ValueError:
+                        return None
 
         # JSON (proxy_settings, config, fragment_settings, etc.)
         if "json" in col_type or "jsonb" in col_type:
