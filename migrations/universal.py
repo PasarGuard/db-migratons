@@ -57,7 +57,7 @@ class UniversalMigrator:
             if self.source.endswith(".sql"):
                 self.is_source_live = False
                 return True
-            elif self.source.endswith(".db") or self.source.endswith(".sqlite"):
+            elif self.source.endswith(".db") or self.source.endswith(".sqlite") or self.source.endswith(".sqlite3"):
                 self.is_source_live = True
                 self.source_type = "sqlite"
                 return True
