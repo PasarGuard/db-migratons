@@ -850,6 +850,13 @@ class UniversalMigrator:
             "hosts",
             "user_templates",
             "core_configs"
+            "user_subscription_updates",
+            "admin_usage_logs",
+            "next_plans",
+            "user_usage_logs",
+            "node_user_usages",
+            "node_usages",
+            "notification_reminders"
         ]
 
         for table in sequence_tables:
