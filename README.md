@@ -10,10 +10,18 @@ A powerful, universal database migration tool supporting migrations between Post
 ### Install uv
 
 ```bash
+apt update && apt install -y build-essential
+```
+
+```bash
 # Linux/macOS
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Or visit: https://github.com/astral-sh/uv
+```
+
+```bash
+source $HOME/.local/bin/env
 ```
 
 ## Installation
