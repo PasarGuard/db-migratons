@@ -521,6 +521,15 @@ class UniversalMigrator:
     async def clear_data(self):
         """Clear target database tables"""
         print("\n⚠ WARNING: This will delete ALL data in the target database!")
+
+        # Detect and display auto-increment tables
+        auto_increment_tables = await self.detect_auto_increment_tables()
+        if auto_increment_tables:
+            print("\n📋 Tables with auto-increment columns that will be reset:")
+            for table, column in sorted(auto_increment_tables.items()):
+                print(f"  • {table}.{column}")
+
+        print()
         resp = input("Type 'yes' to continue: ")
         if resp.lower() != "yes":
             print("Cancelled")
@@ -823,6 +832,52 @@ class UniversalMigrator:
         placeholders = ", ".join([f":{c}" for c in cols])
         return f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})"
 
+    async def detect_auto_increment_tables(self) -> dict:
+        """
+        Auto-detect tables with auto-increment/serial columns.
+        Returns dict: {table_name: column_name}
+        """
+        auto_increment_tables = {}
+
+        if self.is_target_async:
+            # PostgreSQL: Find sequences and their associated tables
+            async with self.session_maker() as session:
+                result = await session.execute(text("""
+                    SELECT
+                        t.table_name,
+                        c.column_name
+                    FROM information_schema.tables t
+                    JOIN information_schema.columns c
+                        ON t.table_name = c.table_name
+                    WHERE t.table_schema = 'public'
+                        AND t.table_type = 'BASE TABLE'
+                        AND c.column_default LIKE 'nextval%'
+                    ORDER BY t.table_name;
+                """))
+
+                for row in result.fetchall():
+                    table_name, column_name = row
+                    auto_increment_tables[table_name] = column_name
+        else:
+            # MySQL: Find tables with AUTO_INCREMENT columns
+            with self.target_engine.connect() as conn:
+                if self.target_type == "mysql":
+                    result = conn.execute(text("""
+                        SELECT
+                            TABLE_NAME,
+                            COLUMN_NAME
+                        FROM INFORMATION_SCHEMA.COLUMNS
+                        WHERE TABLE_SCHEMA = DATABASE()
+                            AND EXTRA LIKE '%auto_increment%'
+                        ORDER BY TABLE_NAME;
+                    """))
+
+                    for row in result.fetchall():
+                        table_name, column_name = row
+                        auto_increment_tables[table_name] = column_name
+
+        return auto_increment_tables
+
     async def get_max_id(self, table: str, id_column: str = "id") -> int:
         """Get maximum ID from a table"""
         if self.is_target_async:
@@ -840,51 +895,55 @@ class UniversalMigrator:
         """Restart PostgreSQL sequences and MySQL auto-increment after migration"""
         print("\nRestarting sequences/auto-increment...")
 
-        # Tables with auto-incrementing primary keys
-        sequence_tables = [
-            "users",
-            "admins",
-            "nodes",
-            "inbounds",
-            "groups",
-            "hosts",
-            "user_templates",
-            "core_configs"
-            "user_subscription_updates",
-            "admin_usage_logs",
-            "next_plans",
-            "user_usage_logs",
-            "node_user_usages",
-            "node_usages",
-            "notification_reminders"
-        ]
+        # Auto-detect tables with auto-increment columns
+        auto_increment_tables = await self.detect_auto_increment_tables()
 
-        for table in sequence_tables:
-            max_id = await self.get_max_id(table, "id")
+        if not auto_increment_tables:
+            print("  • No auto-increment columns detected")
+            return
+
+        # Process only tables that have data imported
+        for table, id_column in auto_increment_tables.items():
+            # Skip if table wasn't imported
+            if table not in self.tables or not self.tables[table]["rows"]:
+                continue
+
+            max_id = await self.get_max_id(table, id_column)
             if max_id is None or max_id <= 0:
                 continue
 
             next_id = max_id + 1
 
             if self.target_type == "postgres":
-                seq_name = f"{table}_id_seq"
-                print(f"  • {seq_name}: restarting with {next_id}")
-
+                # Get actual sequence name from PostgreSQL
                 if self.is_target_async:
                     async with self.session_maker() as session:
-                        await session.execute(text(f"SELECT setval('{seq_name}', {next_id})"))
-                        await session.commit()
+                        result = await session.execute(
+                            text(f"SELECT pg_get_serial_sequence('{table}', '{id_column}')")
+                        )
+                        seq_name = result.scalar()
+
+                        if seq_name:
+                            await session.execute(text(f"SELECT setval('{seq_name}', {next_id})"))
+                            await session.commit()
+                            print(f"  ✓ {table}.{id_column}: set to {next_id}")
                 else:
                     with self.target_engine.begin() as conn:
-                        conn.execute(text(f"SELECT setval('{seq_name}', {next_id})"))
+                        result = conn.execute(
+                            text(f"SELECT pg_get_serial_sequence('{table}', '{id_column}')")
+                        )
+                        seq_name = result.scalar()
+
+                        if seq_name:
+                            conn.execute(text(f"SELECT setval('{seq_name}', {next_id})"))
+                            print(f"  ✓ {table}.{id_column}: set to {next_id}")
 
             elif self.target_type == "mysql":
-                print(f"  • {table}: setting AUTO_INCREMENT to {next_id}")
-
                 if self.is_target_async:
                     async with self.session_maker() as session:
                         await session.execute(text(f"ALTER TABLE {table} AUTO_INCREMENT = {next_id}"))
                         await session.commit()
+                        print(f"  ✓ {table}.{id_column}: set to {next_id}")
                 else:
                     with self.target_engine.begin() as conn:
                         conn.execute(text(f"ALTER TABLE {table} AUTO_INCREMENT = {next_id}"))
