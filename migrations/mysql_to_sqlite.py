@@ -54,12 +54,12 @@ async def main():
         sys.exit(1)
 
     if not target_db:
-        target_db = get_user_input("SQLite database file", "pasarguard.db")
+        target_db = get_user_input("SQLite database file", "database.db")
 
     if not target_db.startswith("sqlite:///"):
         target_db = f"sqlite:///{target_db}"
 
-    migrator = UniversalMigrator(source, "sqlite", target_db, "mysql", exclude_tables)
+    migrator = UniversalMigrator(source, "sqlite", target_db, "mysql", exclude_tables, None)
     await migrator.run()
 
 

@@ -56,10 +56,10 @@ async def main():
     if not target_db:
         target_db = get_user_input(
             "PostgreSQL URL (postgresql+asyncpg://user:pass@host:port/db)",
-            "postgresql+asyncpg://admin:pass@localhost:5432/pasarguard",
+            "postgresql+asyncpg://user:password@localhost:5432/targetdb",
         )
 
-    migrator = UniversalMigrator(source, "postgres", target_db, "mysql", exclude_tables)
+    migrator = UniversalMigrator(source, "postgres", target_db, "mysql", exclude_tables, None)
     await migrator.run()
 
 

@@ -1,5 +1,5 @@
 # Migration Configuration File Example
-# Use this file with: uv run migrations/universal.py --c config.yml
+# Use this file with: uv run migrations/universal.py --config config.yml
 
 # ============================================
 # SOURCE CONFIGURATION
@@ -47,8 +47,62 @@ target:
 
 # Tables to exclude from migration (optional)
 exclude_tables:
-  - node_usages
-  - node_user_usages
+  - admin_usage_logs
+  - user_usage_logs
   - node_stats
-# Can also use comma-separated string:
-# exclude_tables: "admin_usage_logs,user_usage_logs,node_stats"
+
+# ============================================
+# TABLE ORDER (Optional - for custom schemas)
+# ============================================
+# Specify the order tables should be cleared and imported
+# IMPORTANT: Order tables based on foreign key dependencies:
+#   1. Tables with no foreign keys first
+#   2. Tables that reference those tables next
+#   3. Continue in dependency order
+# If not specified, uses default PasarGuard schema order
+
+# Default PasarGuard order (customize for your schema):
+table_order:
+  # System/configuration tables (no dependencies)
+  - jwt
+  - system
+  - settings
+
+  # Core tables
+  - admins
+  - core_configs
+  - nodes
+  - inbounds
+  - groups
+
+  # Association tables for many-to-many relationships
+  - inbounds_groups_association
+
+  # Dependent tables
+  - hosts
+  - user_templates
+  - template_group_association
+
+  # User tables (depends on groups, templates)
+  - users
+  - users_groups_association
+  - next_plans
+
+  # Usage and log tables (depends on users, nodes)
+  - admin_usage_logs
+  - user_usage_logs
+  - notification_reminders
+  - user_subscription_updates
+  - node_user_usages
+  - node_usages
+  - node_stats
+
+# Example for a custom blog schema:
+# table_order:
+#   - users            # No dependencies
+#   - categories       # No dependencies
+#   - posts            # References users
+#   - tags             # No dependencies
+#   - post_tags        # References posts and tags
+#   - comments         # References posts and users
+#   - likes            # References users and comments

@@ -15,3 +15,40 @@ exclude_tables:
   - admin_usage_logs
   - user_usage_logs
   - node_stats
+
+# Table order based on foreign key dependencies
+# If not specified, uses default PasarGuard schema order
+table_order:
+  # System/configuration tables (no dependencies)
+  - jwt
+  - system
+  - settings
+
+  # Core tables
+  - admins
+  - core_configs
+  - nodes
+  - inbounds
+  - groups
+
+  # Association tables for many-to-many relationships
+  - inbounds_groups_association
+
+  # Dependent tables
+  - hosts
+  - user_templates
+  - template_group_association
+
+  # User tables (depends on groups, templates)
+  - users
+  - users_groups_association
+  - next_plans
+
+  # Usage and log tables (depends on users, nodes)
+  - admin_usage_logs
+  - user_usage_logs
+  - notification_reminders
+  - user_subscription_updates
+  - node_user_usages
+  - node_usages
+  - node_stats

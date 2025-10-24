@@ -36,7 +36,7 @@ class UniversalMigrator:
     """
 
     def __init__(
-        self, source: str, target_type: str, target_url: str, source_type: str = None, exclude_tables: list = None
+        self, source: str, target_type: str, target_url: str, source_type: str = None, exclude_tables: list = None, table_order: list = None
     ):
         self.source = source
         self.source_type = (
@@ -52,6 +52,40 @@ class UniversalMigrator:
         self.is_source_live = False
         self.is_target_async = target_type == "postgres"
         self.exclude_tables = set(exclude_tables or [])
+        self.table_order = table_order or self._get_default_table_order()
+
+    def _get_default_table_order(self) -> list:
+        """Get default table order (customizable via config file)"""
+        return [
+            # System/configuration tables (no dependencies)
+            "jwt",
+            "system",
+            "settings",
+            # Core tables
+            "admins",
+            "core_configs",
+            "nodes",
+            "inbounds",
+            "groups",
+            # Association tables
+            "inbounds_groups_association",
+            # Dependent tables
+            "hosts",
+            "user_templates",
+            "template_group_association",
+            # User tables
+            "users",
+            "users_groups_association",
+            "next_plans",
+            # Usage and log tables
+            "admin_usage_logs",
+            "user_usage_logs",
+            "notification_reminders",
+            "user_subscription_updates",
+            "node_user_usages",
+            "node_usages",
+            "node_stats",
+        ]
 
     def detect_source_type(self) -> bool:
         """Detect if source is SQL file or database"""
@@ -449,7 +483,7 @@ class UniversalMigrator:
         return ""
 
     def _convert_type(self, val, col_type: str):
-        """Convert to target database type based on actual PasarGuard schema"""
+        """Convert value to target database type with intelligent type detection"""
         if val is None:
             return None
 
@@ -463,7 +497,7 @@ class UniversalMigrator:
                 return bool(val)
             return str(val).lower() in ("true", "1", "t", "yes")
 
-        # BigInteger (traffic counters, usage data)
+        # BigInteger (counters, large numeric values)
         if "bigint" in col_type or "int8" in col_type:
             try:
                 return int(val)
@@ -477,7 +511,7 @@ class UniversalMigrator:
             except (ValueError, TypeError):
                 return None
 
-        # Float/Real (usage_coefficient, cpu_usage, etc.)
+        # Float/Real (decimal numbers, percentages, coefficients, etc.)
         if any(
             t in col_type for t in ["float", "real", "double", "numeric", "decimal"]
         ):
@@ -502,7 +536,7 @@ class UniversalMigrator:
                     except ValueError:
                         return None
 
-        # JSON (proxy_settings, config, fragment_settings, etc.)
+        # JSON (configuration objects, structured data, etc.)
         if "json" in col_type or "jsonb" in col_type:
             if isinstance(val, (dict, list)):
                 return json.dumps(val)
@@ -538,30 +572,8 @@ class UniversalMigrator:
             sys.exit(0)
 
         print("\nClearing tables...")
-        tables = [
-            "admin_usage_logs",
-            "user_usage_logs",
-            "user_subscription_updates",
-            "notification_reminders",
-            "node_user_usages",
-            "node_usages",
-            "node_stats",
-            "next_plans",
-            "users_groups_association",
-            "inbounds_groups_association",
-            "template_group_association",
-            "users",
-            "user_templates",
-            "hosts",
-            "inbounds",
-            "groups",
-            "nodes",
-            "core_configs",
-            "admins",
-            "system",
-            "jwt",
-            "settings",
-        ]
+        # Use custom table order in reverse (clear dependent tables first)
+        tables = list(reversed(self.table_order))
 
         if self.is_target_async:
             # PostgreSQL: Use try/finally to ensure session_replication_role is always restored
@@ -612,39 +624,16 @@ class UniversalMigrator:
         """Import all data"""
         print("\nImporting data...")
 
-        order = [
-            "jwt",
-            "system",
-            "settings",
-            "admins",
-            "core_configs",
-            "nodes",
-            "inbounds",
-            "groups",
-            "inbounds_groups_association",
-            "hosts",
-            "user_templates",
-            "template_group_association",
-            "users",
-            "users_groups_association",
-            "next_plans",
-            "admin_usage_logs",
-            "user_usage_logs",
-            "notification_reminders",
-            "user_subscription_updates",
-            "node_user_usages",
-            "node_usages",
-            "node_stats",
-        ]
-
+        # Use custom table order (import in dependency order)
         stats = {}
 
-        for table in order:
+        for table in self.table_order:
             if table not in self.tables:
                 continue
 
-            if table == "alembic_version":
-                print(f"  ⊘ {table} (skipped)")
+            # Skip migration framework tables (alembic_version, django_migrations, etc.)
+            if table in ("alembic_version", "django_migrations", "flyway_schema_history", "schema_migrations"):
+                print(f"  ⊘ {table} (migration framework table - skipped)")
                 continue
 
             if table in self.exclude_tables:
@@ -1053,30 +1042,8 @@ class UniversalMigrator:
             print("\nCreating SQLite schema...")
 
             with self.target_engine.begin() as conn:
-                for table in [
-                    "jwt",
-                    "system",
-                    "settings",
-                    "admins",
-                    "core_configs",
-                    "nodes",
-                    "inbounds",
-                    "groups",
-                    "hosts",
-                    "user_templates",
-                    "users",
-                    "inbounds_groups_association",
-                    "template_group_association",
-                    "users_groups_association",
-                    "next_plans",
-                    "admin_usage_logs",
-                    "user_usage_logs",
-                    "notification_reminders",
-                    "user_subscription_updates",
-                    "node_user_usages",
-                    "node_usages",
-                    "node_stats",
-                ]:
+                # Use configured table order for schema creation
+                for table in self.table_order:
                     if table in self.create_statements:
                         try:
                             create_sql = self._convert_create_table_to_sqlite(
@@ -1218,7 +1185,10 @@ def parse_args():
         if isinstance(exclude_tables, str):
             exclude_tables = [t.strip() for t in exclude_tables.split(',')]
 
-        return source, target_type, target_db, source_type, exclude_tables
+        # Parse table_order
+        table_order = config.get('table_order')
+
+        return source, target_type, target_db, source_type, exclude_tables, table_order
 
     # Original command-line parsing
     if len(args) < 1 or "--help" in args or "-h" in args:
@@ -1261,6 +1231,7 @@ def parse_args():
     target_db = None
     source_type = None
     exclude_tables = None
+    table_order = None
 
     i = 1
     while i < len(args):
@@ -1279,7 +1250,7 @@ def parse_args():
         else:
             i += 1
 
-    return source, target_type, target_db, source_type, exclude_tables
+    return source, target_type, target_db, source_type, exclude_tables, table_order
 
 
 def get_user_input(prompt: str, default: str = None) -> str:
@@ -1292,7 +1263,7 @@ def get_user_input(prompt: str, default: str = None) -> str:
 
 
 async def main():
-    source, target_type, target_db, source_type, exclude_tables = parse_args()
+    source, target_type, target_db, source_type, exclude_tables, table_order = parse_args()
 
     if not os.path.exists(source) and not source.startswith(
         ("postgresql://", "mysql://", "sqlite://")
@@ -1301,7 +1272,7 @@ async def main():
         sys.exit(1)
 
     print("\n" + "=" * 60)
-    print("PasarGuard Universal Database Migration")
+    print("Universal Database Migration Tool")
     print("=" * 60)
     print(f"\nSource: {source}\n")
 
@@ -1329,8 +1300,8 @@ async def main():
             target_db = get_user_input("MySQL URL")
 
         elif target_type == "sqlite":
-            print("Example: pasarguard.db")
-            target_db = get_user_input("SQLite database file", "pasarguard.db")
+            print("Example: database.db")
+            target_db = get_user_input("SQLite database file", "database.db")
 
     if not target_db:
         print("\nError: No database connection specified")
@@ -1371,7 +1342,7 @@ async def main():
         print("Cancelled")
         sys.exit(0)
 
-    migrator = UniversalMigrator(source, target_type, target_db, source_type, exclude_tables)
+    migrator = UniversalMigrator(source, target_type, target_db, source_type, exclude_tables, table_order)
     success = await migrator.run()
     sys.exit(0 if success else 1)
 

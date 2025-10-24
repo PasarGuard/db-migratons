@@ -54,10 +54,10 @@ async def main():
     if not target_db:
         target_db = get_user_input(
             "MySQL URL (mysql+pymysql://user:pass@host:port/database)",
-            "mysql+pymysql://root:pass@localhost:3306/pasarguard",
+            "mysql+pymysql://user:password@localhost:3306/targetdb",
         )
 
-    migrator = UniversalMigrator(source, "mysql", target_db, "sqlite", exclude_tables)
+    migrator = UniversalMigrator(source, "mysql", target_db, "sqlite", exclude_tables, None)
     await migrator.run()
 
 

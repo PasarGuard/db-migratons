@@ -72,6 +72,11 @@ exclude_tables:  # Optional
   - admin_usage_logs
   - user_usage_logs
   - node_stats
+
+table_order:  # Optional - customize for your schema
+  - users           # Tables with no foreign key dependencies first
+  - posts           # Tables that reference users
+  - comments        # Tables that reference posts and users
 ```
 
 #### Step 2: Run migration
@@ -184,6 +189,32 @@ You can exclude specific tables from migration to speed up the process or skip u
 - `node_usages` - Node usage history
 - `user_subscription_updates` - Subscription update history
 
+### Custom Table Order
+
+For custom database schemas, you can specify the order in which tables should be cleared and imported based on foreign key dependencies. This is crucial to avoid constraint violations during migration.
+
+**In your config file:**
+```yaml
+table_order:
+  - users            # No foreign keys - import first
+  - categories       # No foreign keys
+  - posts            # References users - import after users
+  - tags             # No foreign keys
+  - post_tags        # References posts and tags - import last
+  - comments         # References posts and users
+```
+
+**Ordering rules:**
+1. List tables with **no foreign key dependencies first**
+2. List tables that **reference those tables next**
+3. Continue in **dependency order**
+4. If not specified, the tool uses the default PasarGuard schema order
+
+**Why is this important?**
+- Tables are cleared in **reverse order** to avoid FK violations during deletion
+- Tables are imported in **specified order** to satisfy FK constraints during insertion
+- Wrong order will cause "foreign key constraint violation" errors
+
 ## Data Type Mapping
 
 The tool intelligently maps data types between databases:
@@ -225,6 +256,11 @@ target:
 exclude_tables:          # Optional
   - admin_usage_logs
   - user_usage_logs
+
+table_order:             # Optional - for custom schemas
+  - users                # Order tables by foreign key dependencies
+  - posts                # Tables with no FKs first, dependent tables later
+  - comments
 ```
 
 ---
