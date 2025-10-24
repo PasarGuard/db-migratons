@@ -126,3 +126,10 @@ temp/
 migration_*.log
 failed_migrations/
 
+# Config files with sensitive data (keep examples)
+config.yml
+config.*.yml
+!config.example.yml
+!config.mysql-to-postgres.yml
+!config.postgres-to-mysql.yml
+

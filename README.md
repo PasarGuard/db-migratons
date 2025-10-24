@@ -46,7 +46,49 @@ That's it! Dependencies are managed via `pyproject.toml` and installed in a loca
 
 ## Usage
 
-### Interactive Mode
+### Method 1: Configuration File (Recommended)
+
+Use a YAML configuration file for cleaner, reusable, and more secure migrations.
+
+#### Step 1: Create a configuration file
+
+```bash
+cp config.example.yml config.yml
+nano config.yml  # or use your preferred editor
+```
+
+Example `config.yml`:
+```yaml
+source:
+  type: "mysql"
+  path: "backup.sql"  # For SQL dumps or SQLite files
+  # url: "mysql://user:pass@host:3306/db"  # For live database connections
+
+target:
+  type: "postgres"
+  url: "postgresql+asyncpg://user:password@localhost:5432/mydb"
+
+exclude_tables:  # Optional
+  - admin_usage_logs
+  - user_usage_logs
+  - node_stats
+```
+
+#### Step 2: Run migration
+
+```bash
+uv run migrations/universal.py --config config.yml
+# Or short form:
+uv run migrations/universal.py -c config.yml
+```
+
+**Benefits:**
+- ✅ Clean and readable
+- ✅ Reusable for repeated migrations
+
+---
+
+### Method 2: Interactive Mode
 
 Simply run the script without arguments:
 
@@ -60,9 +102,11 @@ This will launch an interactive menu where you can:
 3. Review the migration summary
 4. Execute the migration
 
-### Command Line Mode
+---
 
-For automation or scripting:
+### Method 3: Command Line Mode
+
+For quick one-off migrations:
 
 ```bash
 ./migrate.sh <source> --to <type> --db <target_url> [--exclude-tables <tables>]
@@ -75,19 +119,14 @@ For automation or scripting:
 ./migrate.sh pasarguard.db --to postgres --db postgresql+asyncpg://user:pass@localhost:5432/mydb
 ```
 
-**Migrate MySQL dump to SQLite:**
+**Migrate MySQL dump to PostgreSQL:**
 ```bash
-./migrate.sh dump.sql --to sqlite --db output.db
+./migrate.sh mysql_dump.sql --to postgres --db postgresql+asyncpg://admin:password@localhost:5432/pasarguard
 ```
 
 **Migrate PostgreSQL to MySQL:**
 ```bash
 ./migrate.sh postgresql://user:pass@host:5432/sourcedb --to mysql --db mysql+pymysql://user:pass@host:3306/targetdb
-```
-
-**Migrate MySQL dump to PostgreSQL:**
-```bash
-./migrate.sh mysql_dump.sql --to postgres --db postgresql+asyncpg://admin:password@localhost:5432/pasarguard
 ```
 
 **Exclude specific tables (for faster migration):**
@@ -158,25 +197,55 @@ The tool intelligently maps data types between databases:
 | ENUM | VARCHAR | TEXT |
 | TINYINT(1) | BOOLEAN | INTEGER |
 
+## Configuration Files
+
+### Pre-made Templates
+
+The repository includes example configuration files:
+
+- **`config.example.yml`** - Complete template with all options and comments
+- **`config.mysql-to-postgres.yml`** - MySQL → PostgreSQL migration example
+- **`config.postgres-to-mysql.yml`** - PostgreSQL → MySQL migration example
+
+### Config File Structure
+
+```yaml
+source:
+  type: "mysql"          # postgres, mysql, or sqlite
+  path: "backup.sql"     # For SQL dumps or SQLite files
+  # OR
+  url: "mysql://..."     # For live database connections
+
+target:
+  type: "postgres"       # postgres, mysql, or sqlite
+  url: "postgresql+asyncpg://..."  # For live databases (recommended)
+  # OR
+  path: "output.db"      # For SQLite output
+
+exclude_tables:          # Optional
+  - admin_usage_logs
+  - user_usage_logs
+```
+
+---
+
 ## Safety Features
 
 ⚠️ **Warning**: The tool will DELETE all data in the target database before migration.
 
-- Interactive confirmation required
-- Preview migration summary before execution
-- Password masking in output
-- Detailed error reporting
-- Transaction support where available
+- ✅ Interactive confirmation required
+- ✅ Shows auto-increment columns that will be reset
+- ✅ Preview migration summary before execution
+- ✅ Password masking in output
+- ✅ Detailed error reporting
+- ✅ Transaction support with proper rollback
+- ✅ Batch operations (1000 rows per commit) for performance
 
 ## Migration Scripts
 
 The project includes specialized migration scripts:
 
-- `migrations/universal.py` - Universal migrator for all database types
-- `migrations/mysql_to_postgres.py` - MySQL to PostgreSQL migration
-- `migrations/mysql_to_sqlite.py` - MySQL to SQLite migration
-- `migrations/sqlite_to_postgres.py` - SQLite to PostgreSQL migration
-- `migrations/sqlite_to_mysql.py` - SQLite to MySQL migration
+- `migrations/universal.py` - Universal migrator for all database types (recommended)
 
 ## Troubleshooting
 
@@ -210,6 +279,7 @@ The tool automatically manages these dependencies via `uv`:
 - `sqlalchemy` - Database toolkit and ORM
 - `asyncpg` - PostgreSQL async driver
 - `pymysql` - MySQL driver
+- `pyyaml` - YAML configuration file parser
 
 ## Contributing
 

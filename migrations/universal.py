@@ -10,6 +10,7 @@ import os
 import re
 import sys
 from datetime import datetime
+from pathlib import Path
 
 try:
     from sqlalchemy import text, create_engine, inspect
@@ -18,9 +19,10 @@ try:
         async_sessionmaker,
         create_async_engine,
     )
+    import yaml
 except ImportError:
     print("Error: Required packages not installed.")
-    print("Install with: pip install sqlalchemy asyncpg pymysql")
+    print("Install with: uv sync")
     sys.exit(1)
 
 
@@ -1131,22 +1133,127 @@ class UniversalMigrator:
 
 
 # CLI wrapper
+def load_config_file(config_path: str) -> dict:
+    """Load migration configuration from YAML file"""
+    if not os.path.exists(config_path):
+        print(f"Error: Config file '{config_path}' not found")
+        sys.exit(1)
+
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+
+        if not config:
+            print(f"Error: Config file '{config_path}' is empty")
+            sys.exit(1)
+
+        return config
+    except yaml.YAMLError as e:
+        print(f"Error: Invalid YAML in config file: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: Failed to read config file: {e}")
+        sys.exit(1)
+
+
 def parse_args():
     args = sys.argv[1:]
+
+    # Check for config file first
+    config_file = None
+    if "--config" in args or "-c" in args:
+        try:
+            idx = args.index("--config") if "--config" in args else args.index("-c")
+            if idx + 1 < len(args):
+                config_file = args[idx + 1]
+        except (ValueError, IndexError):
+            pass
+
+    if config_file:
+        # Load from config file
+        config = load_config_file(config_file)
+
+        # Parse source
+        source_config = config.get('source', {})
+        if not source_config:
+            print("Error: 'source' section not found in config file")
+            sys.exit(1)
+
+        source_type = source_config.get('type')
+        source_path = source_config.get('path')
+        source_url = source_config.get('url')
+
+        if source_path:
+            source = source_path
+        elif source_url:
+            source = source_url
+        else:
+            print("Error: 'source.path' or 'source.url' must be specified in config file")
+            sys.exit(1)
+
+        # Parse target
+        target_config = config.get('target', {})
+        if not target_config:
+            print("Error: 'target' section not found in config file")
+            sys.exit(1)
+
+        target_type = target_config.get('type')
+        target_path = target_config.get('path')
+        target_url = target_config.get('url')
+
+        if not target_type:
+            print("Error: 'target.type' not specified in config file")
+            sys.exit(1)
+
+        if target_path:
+            target_db = target_path
+        elif target_url:
+            target_db = target_url
+        else:
+            print("Error: 'target.path' or 'target.url' must be specified in config file")
+            sys.exit(1)
+
+        # Parse exclude_tables
+        exclude_tables = config.get('exclude_tables', [])
+        if isinstance(exclude_tables, str):
+            exclude_tables = [t.strip() for t in exclude_tables.split(',')]
+
+        return source, target_type, target_db, source_type, exclude_tables
+
+    # Original command-line parsing
     if len(args) < 1 or "--help" in args or "-h" in args:
         print(__doc__)
-        print("\nUsage: python universal.py <source> [OPTIONS]")
-        print("\nSource can be:")
-        print("  - SQL dump file (.sql)")
-        print("  - SQLite database file (.db, .sqlite)")
-        print("  - Database URL (postgresql://..., mysql://..., sqlite://...)")
+        print("\nUsage:")
+        print("  python universal.py <source> [OPTIONS]")
+        print("  python universal.py --config <config.yml>  (recommended)")
+        print("\nCommand Line Mode:")
+        print("  <source>                Source file or database URL")
         print("\nOptions:")
+        print("  --config, -c <file>     Load configuration from YAML file")
         print("  --to, -t <type>         Target database: postgres, mysql, sqlite")
         print("  --db, -d <url>          Target database connection URL or file path")
-        print(
-            "  --source-type <type>    Source database type (auto-detected if not specified)"
-        )
+        print("  --source-type <type>    Source database type (auto-detected if not specified)")
         print("  --exclude-tables <list> Comma-separated list of tables to exclude")
+        print("\nConfig File Format:")
+        print("  source:")
+        print("    type: mysql|postgres|sqlite")
+        print("    path: <dump_file>  # For SQL dumps or SQLite files")
+        print("    # OR")
+        print("    url: <connection_url>  # For live database connections")
+        print("  target:")
+        print("    type: mysql|postgres|sqlite")
+        print("    path: <output_file>  # For SQLite")
+        print("    # OR")
+        print("    url: <connection_url>  # For live databases (recommended)")
+        print("  exclude_tables:  # Optional")
+        print("    - table1")
+        print("    - table2")
+        print("\nExamples:")
+        print("  # Using config file (recommended)")
+        print("  python universal.py --config config.mysql-to-postgres.yml")
+        print("\n  # Using command line")
+        print("  python universal.py backup.sql --to postgres --db postgresql+asyncpg://user:pass@localhost:5432/db")
+        print("\nSee config.example.yml for a complete configuration template")
         sys.exit(0 if "--help" in args or "-h" in args else 1)
 
     source = args[0]

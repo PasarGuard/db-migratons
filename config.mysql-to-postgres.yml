@@ -1,0 +1,17 @@
+# MySQL to PostgreSQL Migration Config
+# Usage: ./migrate.sh --config config.mysql-to-postgres.yml
+
+source:
+  type: "mysql"
+  path: "mysql_dump.sql"  # SQL dump file
+  # For live MySQL connection:
+  # url: "mysql://user:password@localhost:3306/sourcedb"
+
+target:
+  type: "postgres"
+  url: "postgresql+asyncpg://admin:password@localhost:5432/pasarguard"
+
+exclude_tables:
+  - admin_usage_logs
+  - user_usage_logs
+  - node_stats

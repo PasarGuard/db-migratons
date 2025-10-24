@@ -1,0 +1,54 @@
+# Migration Configuration File Example
+# Use this file with: uv run migrations/universal.py --c config.yml
+
+# ============================================
+# SOURCE CONFIGURATION
+# ============================================
+
+source:
+  # Source database type: postgres, mysql, or sqlite
+  type: "mysql"
+
+  # For SQL dump files or SQLite databases, use 'path':
+  path: "backup.sql"
+  # Examples:
+  # path: "mysql_dump.sql"        # MySQL SQL dump
+  # path: "postgres_dump.sql"     # PostgreSQL SQL dump
+  # path: "database.db"           # SQLite database file
+
+  # For live database connections, use 'url' instead:
+  # url: "mysql://user:pass@localhost:3306/sourcedb"
+  # url: "postgresql://user:pass@localhost:5432/sourcedb"
+
+
+# ============================================
+# TARGET CONFIGURATION
+# ============================================
+
+target:
+  # Target database type: postgres, mysql, or sqlite
+  type: "postgres"
+
+  # For live database connection (recommended), use 'url':
+  url: "postgresql+asyncpg://user:password@localhost:5432/targetdb"
+  # Examples:
+  # url: "postgresql+asyncpg://admin:pass@localhost:5432/mydb"  # PostgreSQL
+  # url: "mysql+pymysql://admin:pass@localhost:3306/mydb"       # MySQL
+
+  # For SQLite file, use 'path':
+  # path: "output.db"
+  # or use 'url':
+  # url: "sqlite:///output.db"
+
+
+# ============================================
+# OPTIONAL SETTINGS
+# ============================================
+
+# Tables to exclude from migration (optional)
+exclude_tables:
+  - node_usages
+  - node_user_usages
+  - node_stats
+# Can also use comma-separated string:
+# exclude_tables: "admin_usage_logs,user_usage_logs,node_stats"

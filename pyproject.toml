@@ -7,5 +7,6 @@ requires-python = ">=3.13"
 dependencies = [
     "asyncpg>=0.30.0",
     "pymysql>=1.1.2",
+    "pyyaml>=6.0.3",
     "sqlalchemy>=2.0.43",
 ]

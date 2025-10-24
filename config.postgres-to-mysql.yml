@@ -1,0 +1,14 @@
+# PostgreSQL to MySQL Migration Config
+# Usage: ./migrate.sh --config config.postgres-to-mysql.yml
+
+source:
+  type: "postgres"
+  url: "postgresql://user:password@localhost:5432/sourcedb"
+
+target:
+  type: "mysql"
+  url: "mysql+pymysql://admin:password@localhost:3306/targetdb"
+
+exclude_tables:
+  - admin_usage_logs
+  - user_usage_logs
