@@ -57,7 +57,9 @@ async def main():
             "mysql+pymysql://user:password@localhost:3306/targetdb",
         )
 
-    migrator = UniversalMigrator(source, "mysql", target_db, "sqlite", exclude_tables, None)
+    migrator = UniversalMigrator(
+        source, "mysql", target_db, "sqlite", exclude_tables, None, None
+    )
     await migrator.run()
 
 

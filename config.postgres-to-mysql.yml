@@ -13,6 +13,11 @@ exclude_tables:
   - admin_usage_logs
   - user_usage_logs
 
+# Enum/string column default values (optional)
+enum_defaults:
+  fingerprint: "none"
+  security: "inbound_default"
+
 # Table order based on foreign key dependencies
 # If not specified, uses default PasarGuard schema order
 table_order:

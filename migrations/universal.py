@@ -10,7 +10,6 @@ import os
 import re
 import sys
 from datetime import datetime
-from pathlib import Path
 
 try:
     from sqlalchemy import text, create_engine, inspect
@@ -36,7 +35,14 @@ class UniversalMigrator:
     """
 
     def __init__(
-        self, source: str, target_type: str, target_url: str, source_type: str = None, exclude_tables: list = None, table_order: list = None
+        self,
+        source: str,
+        target_type: str,
+        target_url: str,
+        source_type: str = None,
+        exclude_tables: list = None,
+        table_order: list = None,
+        enum_defaults: dict = None,
     ):
         self.source = source
         self.source_type = (
@@ -53,6 +59,12 @@ class UniversalMigrator:
         self.is_target_async = target_type == "postgres"
         self.exclude_tables = set(exclude_tables or [])
         self.table_order = table_order or self._get_default_table_order()
+        # If enum_defaults is None, use fallback. If it's an empty dict {}, respect that (no defaults)
+        self.enum_defaults = (
+            self._get_default_enum_defaults()
+            if enum_defaults is None
+            else enum_defaults
+        )
 
     def _get_default_table_order(self) -> list:
         """Get default table order (customizable via config file)"""
@@ -87,13 +99,24 @@ class UniversalMigrator:
             "node_stats",
         ]
 
+    def _get_default_enum_defaults(self) -> dict:
+        """Get default enum/string column default values (customizable via config file)"""
+        return {
+            "fingerprint": "none",
+            "security": "inbound_default",
+        }
+
     def detect_source_type(self) -> bool:
         """Detect if source is SQL file or database"""
         if os.path.isfile(self.source):
             if self.source.endswith(".sql"):
                 self.is_source_live = False
                 return True
-            elif self.source.endswith(".db") or self.source.endswith(".sqlite") or self.source.endswith(".sqlite3"):
+            elif (
+                self.source.endswith(".db")
+                or self.source.endswith(".sqlite")
+                or self.source.endswith(".sqlite3")
+            ):
                 self.is_source_live = True
                 self.source_type = "sqlite"
                 return True
@@ -185,7 +208,9 @@ class UniversalMigrator:
             print(f"  • {name}: {len(data['rows'])} rows")
 
         if self.exclude_tables:
-            print(f"✓ Excluded {len(self.exclude_tables)} tables: {', '.join(sorted(self.exclude_tables))}")
+            print(
+                f"✓ Excluded {len(self.exclude_tables)} tables: {', '.join(sorted(self.exclude_tables))}"
+            )
 
     def parse_sql(self):
         """Parse SQL dump file"""
@@ -218,7 +243,10 @@ class UniversalMigrator:
 
                 # Extract column order from CREATE TABLE for proper mapping
                 if table not in self.tables:
-                    self.tables[table] = {"columns": self._extract_columns_from_create(definition), "rows": []}
+                    self.tables[table] = {
+                        "columns": self._extract_columns_from_create(definition),
+                        "rows": [],
+                    }
 
         # Match INSERT statements - handle semicolons in data by looking ahead for statement terminators
         # This matches until we find a semicolon followed by keywords or end of input
@@ -250,7 +278,9 @@ class UniversalMigrator:
             print(f"  • {name}: {len(data['rows'])} rows")
 
         if self.exclude_tables:
-            print(f"✓ Excluded {len(self.exclude_tables)} tables: {', '.join(sorted(self.exclude_tables))}")
+            print(
+                f"✓ Excluded {len(self.exclude_tables)} tables: {', '.join(sorted(self.exclude_tables))}"
+            )
 
     def _parse_columns(self, cols: str) -> list:
         """Extract column names from INSERT statement"""
@@ -262,11 +292,20 @@ class UniversalMigrator:
         columns = []
         # Match column definitions (column_name data_type ...)
         # This regex matches lines like: `id` int NOT NULL AUTO_INCREMENT,
-        pattern = re.compile(r'^\s*[`\'\"]?(\w+)[`\'\"]?\s+\w+', re.MULTILINE)
+        pattern = re.compile(r"^\s*[`\'\"]?(\w+)[`\'\"]?\s+\w+", re.MULTILINE)
         for match in pattern.finditer(definition):
             col_name = match.group(1)
             # Skip constraint keywords
-            if col_name.upper() not in ('PRIMARY', 'KEY', 'UNIQUE', 'CONSTRAINT', 'FOREIGN', 'INDEX', 'FULLTEXT', 'CHECK'):
+            if col_name.upper() not in (
+                "PRIMARY",
+                "KEY",
+                "UNIQUE",
+                "CONSTRAINT",
+                "FOREIGN",
+                "INDEX",
+                "FULLTEXT",
+                "CHECK",
+            ):
                 columns.append(col_name)
         return columns
 
@@ -472,11 +511,9 @@ class UniversalMigrator:
 
         # For text/string fields
         if any(t in col_type for t in ["text", "varchar", "char", "character"]):
-            # Special case for known enum fields
-            if column == "fingerprint":
-                return "none"
-            if column == "security":
-                return "inbound_default"
+            # Check for configured enum defaults
+            if column in self.enum_defaults:
+                return self.enum_defaults[column]
             return ""
 
         # Default fallback
@@ -525,14 +562,14 @@ class UniversalMigrator:
             if isinstance(val, str):
                 try:
                     # Handle SQLite datetime format with microseconds
-                    if '.' in val:
+                    if "." in val:
                         return datetime.strptime(val, "%Y-%m-%d %H:%M:%S.%f")
                     else:
                         return datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
                 except ValueError:
                     try:
                         # Try ISO format
-                        return datetime.fromisoformat(val.replace('Z', '+00:00'))
+                        return datetime.fromisoformat(val.replace("Z", "+00:00"))
                     except ValueError:
                         return None
 
@@ -579,14 +616,18 @@ class UniversalMigrator:
             # PostgreSQL: Use try/finally to ensure session_replication_role is always restored
             try:
                 async with self.session_maker() as session:
-                    await session.execute(text("SET session_replication_role = 'replica';"))
+                    await session.execute(
+                        text("SET session_replication_role = 'replica';")
+                    )
                     await session.commit()
 
                 # Truncate each table in its own transaction to avoid cascading failures
                 for table in tables:
                     async with self.session_maker() as session:
                         try:
-                            await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+                            await session.execute(
+                                text(f"TRUNCATE TABLE {table} CASCADE")
+                            )
                             await session.commit()
                             print(f"  ✓ {table}")
                         except Exception as e:
@@ -595,7 +636,9 @@ class UniversalMigrator:
             finally:
                 # CRITICAL: Always restore session_replication_role, even on errors
                 async with self.session_maker() as session:
-                    await session.execute(text("SET session_replication_role = 'origin';"))
+                    await session.execute(
+                        text("SET session_replication_role = 'origin';")
+                    )
                     await session.commit()
         else:
             if self.target_type == "mysql":
@@ -632,7 +675,12 @@ class UniversalMigrator:
                 continue
 
             # Skip migration framework tables (alembic_version, django_migrations, etc.)
-            if table in ("alembic_version", "django_migrations", "flyway_schema_history", "schema_migrations"):
+            if table in (
+                "alembic_version",
+                "django_migrations",
+                "flyway_schema_history",
+                "schema_migrations",
+            ):
                 print(f"  ⊘ {table} (migration framework table - skipped)")
                 continue
 
@@ -676,7 +724,8 @@ class UniversalMigrator:
                             converted = []
                             for c, v in zip(cols, row_vals):
                                 col_info = cols_dict.get(
-                                    c, {"type": "text", "nullable": True, "default": None}
+                                    c,
+                                    {"type": "text", "nullable": True, "default": None},
                                 )
 
                                 # Preserve None/NULL values for nullable columns
@@ -757,7 +806,9 @@ class UniversalMigrator:
 
                             # Handle None values for NOT NULL columns
                             if converted_val is None and not col_info["nullable"]:
-                                converted_val = self._get_default_value(col_info, table, c)
+                                converted_val = self._get_default_value(
+                                    col_info, table, c
+                                )
 
                             converted.append(converted_val)
 
@@ -833,7 +884,8 @@ class UniversalMigrator:
         if self.is_target_async:
             # PostgreSQL: Find sequences and their associated tables
             async with self.session_maker() as session:
-                result = await session.execute(text("""
+                result = await session.execute(
+                    text("""
                     SELECT
                         t.table_name,
                         c.column_name
@@ -844,7 +896,8 @@ class UniversalMigrator:
                         AND t.table_type = 'BASE TABLE'
                         AND c.column_default LIKE 'nextval%'
                     ORDER BY t.table_name;
-                """))
+                """)
+                )
 
                 for row in result.fetchall():
                     table_name, column_name = row
@@ -853,7 +906,8 @@ class UniversalMigrator:
             # MySQL: Find tables with AUTO_INCREMENT columns
             with self.target_engine.connect() as conn:
                 if self.target_type == "mysql":
-                    result = conn.execute(text("""
+                    result = conn.execute(
+                        text("""
                         SELECT
                             TABLE_NAME,
                             COLUMN_NAME
@@ -861,7 +915,8 @@ class UniversalMigrator:
                         WHERE TABLE_SCHEMA = DATABASE()
                             AND EXTRA LIKE '%auto_increment%'
                         ORDER BY TABLE_NAME;
-                    """))
+                    """)
+                    )
 
                     for row in result.fetchall():
                         table_name, column_name = row
@@ -873,7 +928,9 @@ class UniversalMigrator:
         """Get maximum ID from a table"""
         if self.is_target_async:
             async with self.session_maker() as session:
-                result = await session.execute(text(f"SELECT MAX({id_column}) FROM {table}"))
+                result = await session.execute(
+                    text(f"SELECT MAX({id_column}) FROM {table}")
+                )
                 max_id = result.scalar()
                 return max_id if max_id is not None else 0
         else:
@@ -910,34 +967,46 @@ class UniversalMigrator:
                 if self.is_target_async:
                     async with self.session_maker() as session:
                         result = await session.execute(
-                            text(f"SELECT pg_get_serial_sequence('{table}', '{id_column}')")
+                            text(
+                                f"SELECT pg_get_serial_sequence('{table}', '{id_column}')"
+                            )
                         )
                         seq_name = result.scalar()
 
                         if seq_name:
-                            await session.execute(text(f"SELECT setval('{seq_name}', {next_id})"))
+                            await session.execute(
+                                text(f"SELECT setval('{seq_name}', {next_id})")
+                            )
                             await session.commit()
                             print(f"  ✓ {table}.{id_column}: set to {next_id}")
                 else:
                     with self.target_engine.begin() as conn:
                         result = conn.execute(
-                            text(f"SELECT pg_get_serial_sequence('{table}', '{id_column}')")
+                            text(
+                                f"SELECT pg_get_serial_sequence('{table}', '{id_column}')"
+                            )
                         )
                         seq_name = result.scalar()
 
                         if seq_name:
-                            conn.execute(text(f"SELECT setval('{seq_name}', {next_id})"))
+                            conn.execute(
+                                text(f"SELECT setval('{seq_name}', {next_id})")
+                            )
                             print(f"  ✓ {table}.{id_column}: set to {next_id}")
 
             elif self.target_type == "mysql":
                 if self.is_target_async:
                     async with self.session_maker() as session:
-                        await session.execute(text(f"ALTER TABLE {table} AUTO_INCREMENT = {next_id}"))
+                        await session.execute(
+                            text(f"ALTER TABLE {table} AUTO_INCREMENT = {next_id}")
+                        )
                         await session.commit()
                         print(f"  ✓ {table}.{id_column}: set to {next_id}")
                 else:
                     with self.target_engine.begin() as conn:
-                        conn.execute(text(f"ALTER TABLE {table} AUTO_INCREMENT = {next_id}"))
+                        conn.execute(
+                            text(f"ALTER TABLE {table} AUTO_INCREMENT = {next_id}")
+                        )
 
         print("✓ Sequences/auto-increment restarted")
 
@@ -1107,7 +1176,7 @@ def load_config_file(config_path: str) -> dict:
         sys.exit(1)
 
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
         if not config:
@@ -1141,32 +1210,34 @@ def parse_args():
         config = load_config_file(config_file)
 
         # Parse source
-        source_config = config.get('source', {})
+        source_config = config.get("source", {})
         if not source_config:
             print("Error: 'source' section not found in config file")
             sys.exit(1)
 
-        source_type = source_config.get('type')
-        source_path = source_config.get('path')
-        source_url = source_config.get('url')
+        source_type = source_config.get("type")
+        source_path = source_config.get("path")
+        source_url = source_config.get("url")
 
         if source_path:
             source = source_path
         elif source_url:
             source = source_url
         else:
-            print("Error: 'source.path' or 'source.url' must be specified in config file")
+            print(
+                "Error: 'source.path' or 'source.url' must be specified in config file"
+            )
             sys.exit(1)
 
         # Parse target
-        target_config = config.get('target', {})
+        target_config = config.get("target", {})
         if not target_config:
             print("Error: 'target' section not found in config file")
             sys.exit(1)
 
-        target_type = target_config.get('type')
-        target_path = target_config.get('path')
-        target_url = target_config.get('url')
+        target_type = target_config.get("type")
+        target_path = target_config.get("path")
+        target_url = target_config.get("url")
 
         if not target_type:
             print("Error: 'target.type' not specified in config file")
@@ -1177,18 +1248,31 @@ def parse_args():
         elif target_url:
             target_db = target_url
         else:
-            print("Error: 'target.path' or 'target.url' must be specified in config file")
+            print(
+                "Error: 'target.path' or 'target.url' must be specified in config file"
+            )
             sys.exit(1)
 
         # Parse exclude_tables
-        exclude_tables = config.get('exclude_tables', [])
+        exclude_tables = config.get("exclude_tables", [])
         if isinstance(exclude_tables, str):
-            exclude_tables = [t.strip() for t in exclude_tables.split(',')]
+            exclude_tables = [t.strip() for t in exclude_tables.split(",")]
 
         # Parse table_order
-        table_order = config.get('table_order')
+        table_order = config.get("table_order")
 
-        return source, target_type, target_db, source_type, exclude_tables, table_order
+        # Parse enum_defaults
+        enum_defaults = config.get("enum_defaults")
+
+        return (
+            source,
+            target_type,
+            target_db,
+            source_type,
+            exclude_tables,
+            table_order,
+            enum_defaults,
+        )
 
     # Original command-line parsing
     if len(args) < 1 or "--help" in args or "-h" in args:
@@ -1202,7 +1286,9 @@ def parse_args():
         print("  --config, -c <file>     Load configuration from YAML file")
         print("  --to, -t <type>         Target database: postgres, mysql, sqlite")
         print("  --db, -d <url>          Target database connection URL or file path")
-        print("  --source-type <type>    Source database type (auto-detected if not specified)")
+        print(
+            "  --source-type <type>    Source database type (auto-detected if not specified)"
+        )
         print("  --exclude-tables <list> Comma-separated list of tables to exclude")
         print("\nConfig File Format:")
         print("  source:")
@@ -1222,7 +1308,9 @@ def parse_args():
         print("  # Using config file (recommended)")
         print("  python universal.py --config config.mysql-to-postgres.yml")
         print("\n  # Using command line")
-        print("  python universal.py backup.sql --to postgres --db postgresql+asyncpg://user:pass@localhost:5432/db")
+        print(
+            "  python universal.py backup.sql --to postgres --db postgresql+asyncpg://user:pass@localhost:5432/db"
+        )
         print("\nSee config.example.yml for a complete configuration template")
         sys.exit(0 if "--help" in args or "-h" in args else 1)
 
@@ -1232,6 +1320,7 @@ def parse_args():
     source_type = None
     exclude_tables = None
     table_order = None
+    enum_defaults = None
 
     i = 1
     while i < len(args):
@@ -1250,7 +1339,15 @@ def parse_args():
         else:
             i += 1
 
-    return source, target_type, target_db, source_type, exclude_tables, table_order
+    return (
+        source,
+        target_type,
+        target_db,
+        source_type,
+        exclude_tables,
+        table_order,
+        enum_defaults,
+    )
 
 
 def get_user_input(prompt: str, default: str = None) -> str:
@@ -1263,7 +1360,15 @@ def get_user_input(prompt: str, default: str = None) -> str:
 
 
 async def main():
-    source, target_type, target_db, source_type, exclude_tables, table_order = parse_args()
+    (
+        source,
+        target_type,
+        target_db,
+        source_type,
+        exclude_tables,
+        table_order,
+        enum_defaults,
+    ) = parse_args()
 
     if not os.path.exists(source) and not source.startswith(
         ("postgresql://", "mysql://", "sqlite://")
@@ -1342,7 +1447,15 @@ async def main():
         print("Cancelled")
         sys.exit(0)
 
-    migrator = UniversalMigrator(source, target_type, target_db, source_type, exclude_tables, table_order)
+    migrator = UniversalMigrator(
+        source,
+        target_type,
+        target_db,
+        source_type,
+        exclude_tables,
+        table_order,
+        enum_defaults,
+    )
     success = await migrator.run()
     sys.exit(0 if success else 1)
 

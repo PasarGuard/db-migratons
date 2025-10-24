@@ -59,7 +59,9 @@ async def main():
     if not target_db.startswith("sqlite:///"):
         target_db = f"sqlite:///{target_db}"
 
-    migrator = UniversalMigrator(source, "sqlite", target_db, "mysql", exclude_tables, None)
+    migrator = UniversalMigrator(
+        source, "sqlite", target_db, "mysql", exclude_tables, None, None
+    )
     await migrator.run()
 
 

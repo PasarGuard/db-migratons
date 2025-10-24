@@ -77,6 +77,10 @@ table_order:  # Optional - customize for your schema
   - users           # Tables with no foreign key dependencies first
   - posts           # Tables that reference users
   - comments        # Tables that reference posts and users
+
+enum_defaults:   # Optional - for enum-like string columns
+  status: "pending"
+  role: "user"
 ```
 
 #### Step 2: Run migration
@@ -215,6 +219,28 @@ table_order:
 - Tables are imported in **specified order** to satisfy FK constraints during insertion
 - Wrong order will cause "foreign key constraint violation" errors
 
+### Enum/String Column Defaults
+
+For columns with enum-like string values that are `NOT NULL` but may have `NULL` values in the source data, you can specify default values to use during migration.
+
+**In your config file:**
+```yaml
+enum_defaults:
+  status: "pending"       # Default for 'status' column
+  role: "user"            # Default for 'role' column
+  visibility: "public"    # Default for 'visibility' column
+```
+
+**Behavior:**
+- If **not specified**: Uses PasarGuard defaults (`fingerprint: "none"`, `security: "inbound_default"`)
+- If **set to `{}`**: Disables all enum defaults (uses empty strings for `NOT NULL` text columns)
+- If **specified**: Uses your custom defaults
+
+**When is this useful?**
+- Migrating databases with enum-like string columns (e.g., `status`, `role`, `type`)
+- Handling `NULL` values in source data for `NOT NULL` columns
+- Ensuring data consistency during migration with sensible defaults
+
 ## Data Type Mapping
 
 The tool intelligently maps data types between databases:
@@ -261,6 +287,10 @@ table_order:             # Optional - for custom schemas
   - users                # Order tables by foreign key dependencies
   - posts                # Tables with no FKs first, dependent tables later
   - comments
+
+enum_defaults:           # Optional - enum column defaults
+  status: "pending"      # Default value for 'status' column
+  role: "user"           # Default value for 'role' column
 ```
 
 ---

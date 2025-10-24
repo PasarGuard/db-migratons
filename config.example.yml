@@ -52,6 +52,26 @@ exclude_tables:
   - node_stats
 
 # ============================================
+# ENUM/STRING COLUMN DEFAULTS (Optional)
+# ============================================
+# Default values for text/varchar columns when value is NULL but column is NOT NULL
+# Useful for enum-like string columns that need default values
+# If not specified, uses PasarGuard defaults. Set to {} to disable all defaults.
+
+enum_defaults:
+  fingerprint: "none"
+  security: "inbound_default"
+
+# For custom schemas, specify your own enum defaults:
+# enum_defaults:
+#   status: "pending"
+#   role: "user"
+#   visibility: "public"
+
+# To disable enum defaults entirely (use empty strings for NOT NULL text columns):
+# enum_defaults: {}
+
+# ============================================
 # TABLE ORDER (Optional - for custom schemas)
 # ============================================
 # Specify the order tables should be cleared and imported
