@@ -43,6 +43,7 @@ class UniversalMigrator:
         exclude_tables: list = None,
         table_order: list = None,
         enum_defaults: dict = None,
+        truncate_strings: bool = False,
     ):
         self.source = source
         self.source_type = (
@@ -65,6 +66,8 @@ class UniversalMigrator:
             if enum_defaults is None
             else enum_defaults
         )
+        self.truncate_strings = truncate_strings
+        self.truncation_warnings = []  # Track truncated columns for reporting
 
     def _get_default_table_order(self) -> list:
         """Get default table order (customizable via config file)"""
@@ -424,12 +427,12 @@ class UniversalMigrator:
             return val
 
     async def _get_table_columns(self, table: str) -> dict:
-        """Get target database column types and nullable info"""
+        """Get target database column types, nullable info, and max length"""
         if self.is_target_async:
             async with self.session_maker() as session:
                 result = await session.execute(
                     text(
-                        "SELECT column_name, udt_name, is_nullable, column_default FROM information_schema.columns WHERE table_name = :t ORDER BY ordinal_position"
+                        "SELECT column_name, udt_name, is_nullable, column_default, character_maximum_length FROM information_schema.columns WHERE table_name = :t ORDER BY ordinal_position"
                     ),
                     {"t": table},
                 )
@@ -438,6 +441,7 @@ class UniversalMigrator:
                         "type": row[1],
                         "nullable": row[2] == "YES",
                         "default": row[3],
+                        "max_length": row[4],
                     }
                     for row in result.fetchall()
                 }
@@ -446,7 +450,7 @@ class UniversalMigrator:
                 if self.target_type == "mysql":
                     result = conn.execute(
                         text(
-                            "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = :t ORDER BY ORDINAL_POSITION"
+                            "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = :t ORDER BY ORDINAL_POSITION"
                         ),
                         {"t": table},
                     )
@@ -455,16 +459,24 @@ class UniversalMigrator:
                             "type": row[1].lower(),
                             "nullable": row[2] == "YES",
                             "default": row[3],
+                            "max_length": row[4],
                         }
                         for row in result.fetchall()
                     }
                 else:  # sqlite
                     result = conn.execute(text(f"PRAGMA table_info({table})"))
+                    # SQLite doesn't enforce max length, so we extract it from type definition
+                    def extract_length(type_str):
+                        import re
+                        match = re.search(r'\((\d+)\)', type_str)
+                        return int(match.group(1)) if match else None
+
                     return {
                         row[1]: {
                             "type": row[2].lower(),
                             "nullable": row[3] == 0,
                             "default": row[4],
+                            "max_length": extract_length(row[2]),
                         }
                         for row in result.fetchall()
                     }
@@ -588,6 +600,23 @@ class UniversalMigrator:
         # Text/String (including StringArray, EnumArray - stored as comma-separated)
         if any(t in col_type for t in ["text", "varchar", "char", "character"]):
             return str(val) if val is not None else None
+
+        return val
+
+    def _truncate_if_needed(self, val: str, max_length: int, table: str, column: str) -> str:
+        """Truncate string if it exceeds max length and truncation is enabled"""
+        if not isinstance(val, str) or max_length is None:
+            return val
+
+        if len(val) > max_length:
+            if self.truncate_strings:
+                truncated = val[:max_length]
+                warning_key = f"{table}.{column}"
+                if warning_key not in self.truncation_warnings:
+                    self.truncation_warnings.append(warning_key)
+                return truncated
+            # If truncation disabled, return as-is and let database error
+            return val
 
         return val
 
@@ -741,6 +770,12 @@ class UniversalMigrator:
                                         col_info, table, c
                                     )
 
+                                # Apply string truncation if needed
+                                if col_info.get("max_length"):
+                                    converted_val = self._truncate_if_needed(
+                                        converted_val, col_info["max_length"], table, c
+                                    )
+
                                 converted.append(converted_val)
 
                             params = dict(zip(cols, converted))
@@ -758,10 +793,30 @@ class UniversalMigrator:
                                     batch_data = []
                                 except Exception as e:
                                     await session.rollback()
-                                    fail += len(batch_data)
+                                    # Retry failed batch row-by-row to isolate problematic rows
+                                    batch_ok = 0
+                                    batch_fail = 0
+                                    for data in batch_data:
+                                        try:
+                                            await session.execute(text(sql), data)
+                                            await session.commit()
+                                            batch_ok += 1
+                                        except Exception as row_error:
+                                            await session.rollback()
+                                            batch_fail += 1
+                                            if batch_fail <= 3:  # Print first 3 errors with details
+                                                error_str = str(row_error)
+                                                # Extract the specific column if mentioned in error
+                                                print(f"\n    ✗ Error: {error_str[:200]}")
+                                                # Print sample of row data for debugging
+                                                sample_data = {k: (str(v)[:50] + '...' if isinstance(v, str) and len(str(v)) > 50 else v) for k, v in list(data.items())[:5]}
+                                                print(f"      Sample data: {sample_data}")
+                                    ok += batch_ok
+                                    fail += batch_fail
                                     batch_data = []
-                                    if fail <= 1:  # Print first error for debugging
-                                        print(f"\n    ✗ Error: {str(e)[:100]}")
+                                    if batch_fail == 0 and fail <= 1:
+                                        # Original batch error but all rows succeeded individually
+                                        print(f"\n    ⚠ Batch failed but rows recovered: {str(e)[:100]}")
 
                         # Insert remaining rows
                         if batch_data:
@@ -773,9 +828,24 @@ class UniversalMigrator:
                                 ok += len(batch_data)
                             except Exception as e:
                                 await session.rollback()
-                                fail += len(batch_data)
-                                if fail <= 1:
-                                    print(f"\n    ✗ Error: {str(e)[:100]}")
+                                # Retry failed batch row-by-row
+                                batch_ok = 0
+                                batch_fail = 0
+                                for data in batch_data:
+                                    try:
+                                        await session.execute(text(sql), data)
+                                        await session.commit()
+                                        batch_ok += 1
+                                    except Exception as row_error:
+                                        await session.rollback()
+                                        batch_fail += 1
+                                        if batch_fail <= 3:
+                                            error_str = str(row_error)
+                                            print(f"\n    ✗ Error: {error_str[:200]}")
+                                            sample_data = {k: (str(v)[:50] + '...' if isinstance(v, str) and len(str(v)) > 50 else v) for k, v in list(data.items())[:5]}
+                                            print(f"      Sample data: {sample_data}")
+                                ok += batch_ok
+                                fail += batch_fail
                 finally:
                     # CRITICAL: Always restore session_replication_role, even on errors
                     async with self.session_maker() as session:
@@ -810,6 +880,12 @@ class UniversalMigrator:
                                     col_info, table, c
                                 )
 
+                            # Apply string truncation if needed
+                            if col_info.get("max_length"):
+                                converted_val = self._truncate_if_needed(
+                                    converted_val, col_info["max_length"], table, c
+                                )
+
                             converted.append(converted_val)
 
                         params = dict(zip(cols, converted))
@@ -826,10 +902,27 @@ class UniversalMigrator:
                                 batch_data = []
                             except Exception as e:
                                 conn.rollback()
-                                fail += len(batch_data)
+                                # Retry failed batch row-by-row to isolate problematic rows
+                                batch_ok = 0
+                                batch_fail = 0
+                                for data in batch_data:
+                                    try:
+                                        conn.execute(text(sql), data)
+                                        conn.commit()
+                                        batch_ok += 1
+                                    except Exception as row_error:
+                                        conn.rollback()
+                                        batch_fail += 1
+                                        if batch_fail <= 3:
+                                            error_str = str(row_error)
+                                            print(f"\n    ✗ Error: {error_str[:200]}")
+                                            sample_data = {k: (str(v)[:50] + '...' if isinstance(v, str) and len(str(v)) > 50 else v) for k, v in list(data.items())[:5]}
+                                            print(f"      Sample data: {sample_data}")
+                                ok += batch_ok
+                                fail += batch_fail
                                 batch_data = []
-                                if fail <= 1:  # Print first error for debugging
-                                    print(f"\n    ✗ Error: {str(e)[:100]}")
+                                if batch_fail == 0 and fail <= 1:
+                                    print(f"\n    ⚠ Batch failed but rows recovered: {str(e)[:100]}")
 
                     # Insert remaining rows
                     if batch_data:
@@ -841,9 +934,24 @@ class UniversalMigrator:
                             ok += len(batch_data)
                         except Exception as e:
                             conn.rollback()
-                            fail += len(batch_data)
-                            if fail <= 1:
-                                print(f"\n    ✗ Error: {str(e)[:100]}")
+                            # Retry failed batch row-by-row
+                            batch_ok = 0
+                            batch_fail = 0
+                            for data in batch_data:
+                                try:
+                                    conn.execute(text(sql), data)
+                                    conn.commit()
+                                    batch_ok += 1
+                                except Exception as row_error:
+                                    conn.rollback()
+                                    batch_fail += 1
+                                    if batch_fail <= 3:
+                                        error_str = str(row_error)
+                                        print(f"\n    ✗ Error: {error_str[:200]}")
+                                        sample_data = {k: (str(v)[:50] + '...' if isinstance(v, str) and len(str(v)) > 50 else v) for k, v in list(data.items())[:5]}
+                                        print(f"      Sample data: {sample_data}")
+                            ok += batch_ok
+                            fail += batch_fail
 
             if fail > 0:
                 print(f"⚠ {ok} ok, {fail} failed")
@@ -1264,6 +1372,9 @@ def parse_args():
         # Parse enum_defaults
         enum_defaults = config.get("enum_defaults")
 
+        # Parse truncate_strings
+        truncate_strings = config.get("truncate_strings", False)
+
         return (
             source,
             target_type,
@@ -1272,6 +1383,7 @@ def parse_args():
             exclude_tables,
             table_order,
             enum_defaults,
+            truncate_strings,
         )
 
     # Original command-line parsing
@@ -1321,6 +1433,7 @@ def parse_args():
     exclude_tables = None
     table_order = None
     enum_defaults = None
+    truncate_strings = False
 
     i = 1
     while i < len(args):
@@ -1347,6 +1460,7 @@ def parse_args():
         exclude_tables,
         table_order,
         enum_defaults,
+        truncate_strings,
     )
 
 
@@ -1368,6 +1482,7 @@ async def main():
         exclude_tables,
         table_order,
         enum_defaults,
+        truncate_strings,
     ) = parse_args()
 
     if not os.path.exists(source) and not source.startswith(
@@ -1455,6 +1570,7 @@ async def main():
         exclude_tables,
         table_order,
         enum_defaults,
+        truncate_strings,
     )
     success = await migrator.run()
     sys.exit(0 if success else 1)

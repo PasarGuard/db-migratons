@@ -21,6 +21,10 @@ enum_defaults:
   fingerprint: "none"
   security: "inbound_default"
 
+# Automatically truncate strings that exceed column max length (optional)
+# Set to true to auto-truncate, false to fail on truncation errors
+truncate_strings: false
+
 # Table order based on foreign key dependencies
 # If not specified, uses default PasarGuard schema order
 table_order:

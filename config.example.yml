@@ -72,6 +72,23 @@ enum_defaults:
 # enum_defaults: {}
 
 # ============================================
+# STRING TRUNCATION (Optional)
+# ============================================
+# Automatically truncate strings that exceed column max length
+# Default: false (will fail migration if string is too long)
+# Set to true to auto-truncate with warnings
+
+truncate_strings: false
+
+# When enabled:
+# - Strings longer than VARCHAR(N) will be truncated to N characters
+# - Warnings will be shown for which columns were truncated
+# - Helps avoid "string data right truncation" errors
+# When disabled (default):
+# - Migration will fail if string exceeds max length
+# - Safer option - you'll know about data quality issues
+
+# ============================================
 # TABLE ORDER (Optional - for custom schemas)
 # ============================================
 # Specify the order tables should be cleared and imported
