@@ -60,4 +60,5 @@ table_order:
   - user_subscription_updates
   - node_user_usages
   - node_usages
+  - node_usage_reset_logs
   - node_stats

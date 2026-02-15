@@ -49,7 +49,11 @@ async def main():
     source, target_db, exclude_tables = parse_args()
 
     # Check if source exists (file) or is a URL
-    if not os.path.exists(source) and not source.startswith("mysql://"):
+    source_lower = source.lower()
+    is_mysql_url = source_lower.startswith("mysql://") or source_lower.startswith(
+        "mysql+"
+    )
+    if not os.path.exists(source) and not is_mysql_url:
         print(f"File not found: {source}")
         sys.exit(1)
 

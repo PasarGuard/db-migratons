@@ -99,6 +99,7 @@ class UniversalMigrator:
             "user_subscription_updates",
             "node_user_usages",
             "node_usages",
+            "node_usage_reset_logs",
             "node_stats",
         ]
 
@@ -108,6 +109,24 @@ class UniversalMigrator:
             "fingerprint": "none",
             "security": "inbound_default",
         }
+
+    def _get_effective_table_order(self, available_tables: list) -> list:
+        """
+        Build ordered table list from configured order plus any new/unknown tables.
+
+        Unknown tables are appended so schema drift in PasarGuard does not silently
+        skip clear/create/import steps.
+        """
+        ordered = [table for table in self.table_order if table in available_tables]
+        extras = [table for table in available_tables if table not in self.table_order]
+        return ordered + extras
+
+    def _get_url_scheme_base(self, value: str) -> str | None:
+        """Return base SQLAlchemy URL scheme (e.g., mysql from mysql+pymysql://)."""
+        if "://" not in value:
+            return None
+        scheme = value.split("://", 1)[0].lower()
+        return scheme.split("+", 1)[0]
 
     def detect_source_type(self) -> bool:
         """Detect if source is SQL file or database"""
@@ -123,17 +142,15 @@ class UniversalMigrator:
                 self.is_source_live = True
                 self.source_type = "sqlite"
                 return True
-        # Check if it's a database URL
-        if any(
-            self.source.startswith(prefix)
-            for prefix in ["postgresql://", "mysql://", "sqlite://"]
-        ):
+        # Check if it's a database URL (supports SQLAlchemy driver suffixes)
+        scheme_base = self._get_url_scheme_base(self.source)
+        if scheme_base in {"postgresql", "postgres", "mysql", "sqlite"}:
             self.is_source_live = True
-            if self.source.startswith("postgresql://"):
+            if scheme_base in {"postgresql", "postgres"}:
                 self.source_type = "postgres"
-            elif self.source.startswith("mysql://"):
+            elif scheme_base == "mysql":
                 self.source_type = "mysql"
-            elif self.source.startswith("sqlite://"):
+            elif scheme_base == "sqlite":
                 self.source_type = "sqlite"
             return True
         return False
@@ -143,10 +160,10 @@ class UniversalMigrator:
         if self.is_source_live:
             if self.source_type == "sqlite":
                 # Handle SQLite file path
-                if not self.source.startswith("sqlite:///"):
-                    source_url = f"sqlite:///{self.source}"
-                else:
+                if "://" in self.source:
                     source_url = self.source
+                else:
+                    source_url = f"sqlite:///{self.source}"
                 self.source_engine = create_engine(
                     source_url, pool_pre_ping=True, echo=False
                 )
@@ -222,10 +239,13 @@ class UniversalMigrator:
         with open(self.source, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
 
-        is_sqlite = (
-            re.search(r"\bCREATE\s+TABLE\b", content, flags=re.IGNORECASE)
-            and re.search(r"\bAUTOINCREMENT\b", content, flags=re.IGNORECASE)
+        has_create_table = re.search(
+            r"\bCREATE\s+TABLE\b", content, flags=re.IGNORECASE
         )
+        has_autoincrement = re.search(
+            r"\bAUTOINCREMENT\b", content, flags=re.IGNORECASE
+        )
+        is_sqlite = bool(has_create_table and has_autoincrement)
 
         # Parse CREATE TABLE statements with proper parenthesis matching
         create_pattern = re.compile(
@@ -642,7 +662,9 @@ class UniversalMigrator:
 
         print("\nClearing tables...")
         # Use custom table order in reverse (clear dependent tables first)
-        tables = list(reversed(self.table_order))
+        tables = list(
+            reversed(self._get_effective_table_order(list(self.tables.keys())))
+        )
 
         if self.is_target_async:
             # PostgreSQL: Use try/finally to ensure session_replication_role is always restored
@@ -701,8 +723,9 @@ class UniversalMigrator:
 
         # Use custom table order (import in dependency order)
         stats = {}
+        ordered_tables = self._get_effective_table_order(list(self.tables.keys()))
 
-        for table in self.table_order:
+        for table in ordered_tables:
             if table not in self.tables:
                 continue
 
@@ -1220,10 +1243,13 @@ class UniversalMigrator:
         """Create database schema if needed (for SQLite targets)"""
         if self.target_type == "sqlite" and self.create_statements:
             print("\nCreating SQLite schema...")
+            schema_tables = self._get_effective_table_order(
+                list(self.create_statements.keys())
+            )
 
             with self.target_engine.begin() as conn:
                 # Use configured table order for schema creation
-                for table in self.table_order:
+                for table in schema_tables:
                     if table in self.create_statements:
                         try:
                             create_sql = self._convert_create_table_to_sqlite(
@@ -1488,9 +1514,13 @@ async def main():
         truncate_strings,
     ) = parse_args()
 
-    if not os.path.exists(source) and not source.startswith(
-        ("postgresql://", "mysql://", "sqlite://")
-    ):
+    source_scheme_base = None
+    if "://" in source:
+        source_scheme = source.split("://", 1)[0].lower()
+        source_scheme_base = source_scheme.split("+", 1)[0]
+
+    is_db_url = source_scheme_base in {"postgresql", "postgres", "mysql", "sqlite"}
+    if not os.path.exists(source) and not is_db_url:
         print(f"Error: Source '{source}' not found")
         sys.exit(1)
 
