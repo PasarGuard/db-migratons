@@ -222,7 +222,10 @@ class UniversalMigrator:
         with open(self.source, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
 
-        is_sqlite = "CREATE TABLE" in content and "AUTOINCREMENT" in content.upper()
+        is_sqlite = (
+            re.search(r"\bCREATE\s+TABLE\b", content, flags=re.IGNORECASE)
+            and re.search(r"\bAUTOINCREMENT\b", content, flags=re.IGNORECASE)
+        )
 
         # Parse CREATE TABLE statements with proper parenthesis matching
         create_pattern = re.compile(

@@ -60,7 +60,8 @@ async def main():
     migrator = UniversalMigrator(
         source, "postgres", target_db, "sqlite", exclude_tables, None, None
     )
-    await migrator.run()
+    success = await migrator.run()
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":
