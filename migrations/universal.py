@@ -128,6 +128,19 @@ class UniversalMigrator:
         scheme = value.split("://", 1)[0].lower()
         return scheme.split("+", 1)[0]
 
+    def _quote_identifier(self, identifier: str, db_type: str) -> str:
+        """Quote SQL identifier for the selected database type."""
+        parts = identifier.split(".")
+
+        if db_type == "mysql":
+            quote = "`"
+            escaped_parts = [part.replace(quote, quote * 2) for part in parts]
+        else:
+            quote = '"'
+            escaped_parts = [part.replace(quote, quote * 2) for part in parts]
+
+        return ".".join(f"{quote}{part}{quote}" for part in escaped_parts)
+
     def detect_source_type(self) -> bool:
         """Detect if source is SQL file or database"""
         if os.path.isfile(self.source):
@@ -213,7 +226,8 @@ class UniversalMigrator:
                     continue
 
                 # Get all rows
-                result = conn.execute(text(f"SELECT * FROM {table}"))
+                source_table = self._quote_identifier(table, self.source_type)
+                result = conn.execute(text(f"SELECT * FROM {source_table}"))
                 rows = result.fetchall()
 
                 if rows:
@@ -487,7 +501,8 @@ class UniversalMigrator:
                         for row in result.fetchall()
                     }
                 else:  # sqlite
-                    result = conn.execute(text(f"PRAGMA table_info({table})"))
+                    sqlite_table = self._quote_identifier(table, self.target_type)
+                    result = conn.execute(text(f"PRAGMA table_info({sqlite_table})"))
                     # SQLite doesn't enforce max length, so we extract it from type definition
                     def extract_length(type_str):
                         import re
@@ -679,8 +694,11 @@ class UniversalMigrator:
                 for table in tables:
                     async with self.session_maker() as session:
                         try:
+                            target_table = self._quote_identifier(
+                                table, self.target_type
+                            )
                             await session.execute(
-                                text(f"TRUNCATE TABLE {table} CASCADE")
+                                text(f"TRUNCATE TABLE {target_table} CASCADE")
                             )
                             await session.commit()
                             print(f"  ✓ {table}")
@@ -704,10 +722,13 @@ class UniversalMigrator:
                 for table in tables:
                     try:
                         with self.target_engine.begin() as conn:
+                            target_table = self._quote_identifier(
+                                table, self.target_type
+                            )
                             if self.target_type == "mysql":
-                                conn.execute(text(f"TRUNCATE TABLE {table}"))
+                                conn.execute(text(f"TRUNCATE TABLE {target_table}"))
                             else:
-                                conn.execute(text(f"DELETE FROM {table}"))
+                                conn.execute(text(f"DELETE FROM {target_table}"))
                         print(f"  ✓ {table}")
                     except Exception as e:
                         print(f"  ⚠ {table}: {str(e)[:50]}")
@@ -1005,8 +1026,15 @@ class UniversalMigrator:
 
     def _build_insert(self, table: str, cols: list) -> str:
         """Build INSERT SQL for target database"""
+        quoted_table = self._quote_identifier(table, self.target_type)
+        quoted_cols = [
+            self._quote_identifier(column, self.target_type) for column in cols
+        ]
         placeholders = ", ".join([f":{c}" for c in cols])
-        return f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})"
+        return (
+            f"INSERT INTO {quoted_table} ({', '.join(quoted_cols)}) "
+            f"VALUES ({placeholders})"
+        )
 
     async def detect_auto_increment_tables(self) -> dict:
         """
@@ -1060,16 +1088,20 @@ class UniversalMigrator:
 
     async def get_max_id(self, table: str, id_column: str = "id") -> int:
         """Get maximum ID from a table"""
+        quoted_table = self._quote_identifier(table, self.target_type)
+        quoted_column = self._quote_identifier(id_column, self.target_type)
         if self.is_target_async:
             async with self.session_maker() as session:
                 result = await session.execute(
-                    text(f"SELECT MAX({id_column}) FROM {table}")
+                    text(f"SELECT MAX({quoted_column}) FROM {quoted_table}")
                 )
                 max_id = result.scalar()
                 return max_id if max_id is not None else 0
         else:
             with self.target_engine.connect() as conn:
-                result = conn.execute(text(f"SELECT MAX({id_column}) FROM {table}"))
+                result = conn.execute(
+                    text(f"SELECT MAX({quoted_column}) FROM {quoted_table}")
+                )
                 max_id = result.scalar()
                 return max_id if max_id is not None else 0
 
@@ -1102,14 +1134,16 @@ class UniversalMigrator:
                     async with self.session_maker() as session:
                         result = await session.execute(
                             text(
-                                f"SELECT pg_get_serial_sequence('{table}', '{id_column}')"
-                            )
+                                "SELECT pg_get_serial_sequence(:table_name, :column_name)"
+                            ),
+                            {"table_name": table, "column_name": id_column},
                         )
                         seq_name = result.scalar()
 
                         if seq_name:
                             await session.execute(
-                                text(f"SELECT setval('{seq_name}', {next_id})")
+                                text("SELECT setval(:seq_name, :next_id)"),
+                                {"seq_name": seq_name, "next_id": next_id},
                             )
                             await session.commit()
                             print(f"  ✓ {table}.{id_column}: set to {next_id}")
@@ -1117,29 +1151,38 @@ class UniversalMigrator:
                     with self.target_engine.begin() as conn:
                         result = conn.execute(
                             text(
-                                f"SELECT pg_get_serial_sequence('{table}', '{id_column}')"
-                            )
+                                "SELECT pg_get_serial_sequence(:table_name, :column_name)"
+                            ),
+                            {"table_name": table, "column_name": id_column},
                         )
                         seq_name = result.scalar()
 
                         if seq_name:
                             conn.execute(
-                                text(f"SELECT setval('{seq_name}', {next_id})")
+                                text("SELECT setval(:seq_name, :next_id)"),
+                                {"seq_name": seq_name, "next_id": next_id},
                             )
                             print(f"  ✓ {table}.{id_column}: set to {next_id}")
 
             elif self.target_type == "mysql":
+                target_table = self._quote_identifier(table, self.target_type)
                 if self.is_target_async:
                     async with self.session_maker() as session:
                         await session.execute(
-                            text(f"ALTER TABLE {table} AUTO_INCREMENT = {next_id}")
+                            text(
+                                f"ALTER TABLE {target_table} AUTO_INCREMENT = :next_id"
+                            ),
+                            {"next_id": next_id},
                         )
                         await session.commit()
                         print(f"  ✓ {table}.{id_column}: set to {next_id}")
                 else:
                     with self.target_engine.begin() as conn:
                         conn.execute(
-                            text(f"ALTER TABLE {table} AUTO_INCREMENT = {next_id}")
+                            text(
+                                f"ALTER TABLE {target_table} AUTO_INCREMENT = :next_id"
+                            ),
+                            {"next_id": next_id},
                         )
 
         print("✓ Sequences/auto-increment restarted")
@@ -1237,7 +1280,8 @@ class UniversalMigrator:
         definition = re.sub(r",\s*\)", ")", definition)
         definition = re.sub(r"\(\s*,", "(", definition)
 
-        return f"CREATE TABLE IF NOT EXISTS {table} ({definition})"
+        quoted_table = self._quote_identifier(table, "sqlite")
+        return f"CREATE TABLE IF NOT EXISTS {quoted_table} ({definition})"
 
     async def create_schema(self):
         """Create database schema if needed (for SQLite targets)"""
