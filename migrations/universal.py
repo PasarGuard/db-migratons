@@ -1105,6 +1105,81 @@ class UniversalMigrator:
                 max_id = result.scalar()
                 return max_id if max_id is not None else 0
 
+    async def sync_alembic_version(self):
+        """
+        Sync Alembic revision metadata from source to target when available.
+
+        This prevents target apps from replaying old migrations after a successful
+        data migration.
+        """
+        if "alembic_version" in self.exclude_tables:
+            print("\n⊘ alembic_version sync skipped (excluded)")
+            return
+
+        table_data = self.tables.get("alembic_version")
+        if not table_data:
+            return
+
+        rows = table_data.get("rows") or []
+        if not rows:
+            return
+
+        columns = table_data.get("columns") or []
+        version_index = 0
+        if columns:
+            lowered = [str(c).lower() for c in columns]
+            if "version_num" in lowered:
+                version_index = lowered.index("version_num")
+
+        versions = []
+        for row in rows:
+            if not row or version_index >= len(row):
+                continue
+            value = row[version_index]
+            if value is None:
+                continue
+            value = str(value).strip()
+            if value:
+                versions.append(value)
+
+        versions = sorted(set(versions))
+        if not versions:
+            return
+
+        print("\nSyncing Alembic revision metadata...")
+
+        quoted_table = self._quote_identifier("alembic_version", self.target_type)
+        quoted_column = self._quote_identifier("version_num", self.target_type)
+        create_sql = (
+            f"CREATE TABLE IF NOT EXISTS {quoted_table} "
+            f"({quoted_column} VARCHAR(32) NOT NULL PRIMARY KEY)"
+        )
+        delete_sql = f"DELETE FROM {quoted_table}"
+        insert_sql = (
+            f"INSERT INTO {quoted_table} ({quoted_column}) VALUES (:version_num)"
+        )
+
+        try:
+            if self.is_target_async:
+                async with self.session_maker() as session:
+                    await session.execute(text(create_sql))
+                    await session.execute(text(delete_sql))
+                    for version in versions:
+                        await session.execute(
+                            text(insert_sql), {"version_num": version}
+                        )
+                    await session.commit()
+            else:
+                with self.target_engine.begin() as conn:
+                    conn.execute(text(create_sql))
+                    conn.execute(text(delete_sql))
+                    for version in versions:
+                        conn.execute(text(insert_sql), {"version_num": version})
+
+            print(f"  ✓ alembic_version: {', '.join(versions)}")
+        except Exception as e:
+            print(f"  ⚠ alembic_version sync failed: {str(e)[:120]}")
+
     async def restart_sequences(self):
         """Restart PostgreSQL sequences and MySQL auto-increment after migration"""
         print("\nRestarting sequences/auto-increment...")
@@ -1336,6 +1411,7 @@ class UniversalMigrator:
             await self.create_schema()  # Create schema for SQLite
             await self.clear_data()
             await self.import_data()
+            await self.sync_alembic_version()  # Preserve Alembic revision metadata
             await self.restart_sequences()  # Restart sequences for PostgreSQL
             print("\n✓ Migration completed!")
             return True
